@@ -17,21 +17,45 @@ class EquipmentModel:
         return equipment_id
 
     @staticmethod
-    def get_equipment(equipment_id: int, user_id: int):
-        """Retorna um equipamento do usuario."""
+    def get_equipment(equipment_id: int):
+        """Retorna um equipamento pelo ID."""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM equipments WHERE id = ? AND user_id = ?",
-            (equipment_id, user_id),
+            "SELECT * FROM equipments WHERE id = ?",
+            (equipment_id,),
         )
         equipment = cursor.fetchone()
         conn.close()
         return dict(equipment) if equipment else None
 
     @staticmethod
-    def get_user_equipments(user_id: int):
-        """Lista equipamentos do usuario."""
+    def get_user_equipments():
+        """Lista todos os equipamentos visiveis do sistema."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                equipments.*,
+                COUNT(DISTINCT equipment_documents.id) AS document_count,
+                COUNT(DISTINCT equipment_document_chunks.id) AS chunk_count
+            FROM equipments
+            LEFT JOIN equipment_documents
+                ON equipment_documents.equipment_id = equipments.id
+            LEFT JOIN equipment_document_chunks
+                ON equipment_document_chunks.equipment_id = equipments.id
+            GROUP BY equipments.id
+            ORDER BY LOWER(equipments.name) ASC, equipments.id ASC
+            """
+        )
+        equipments = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return equipments
+
+    @staticmethod
+    def get_owned_equipments(user_id: int):
+        """Lista equipamentos pertencentes a um usuario especifico."""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -47,13 +71,31 @@ class EquipmentModel:
                 ON equipment_document_chunks.equipment_id = equipments.id
             WHERE equipments.user_id = ?
             GROUP BY equipments.id
-            ORDER BY equipments.id DESC
+            ORDER BY LOWER(equipments.name) ASC, equipments.id ASC
             """,
             (user_id,),
         )
         equipments = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return equipments
+
+    @staticmethod
+    def update_equipment(equipment_id: int, user_id: int, name: str, description: str) -> bool:
+        """Atualiza nome e descricao de um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE equipments
+            SET name = ?, description = ?
+            WHERE id = ? AND user_id = ?
+            """,
+            (name, description, equipment_id, user_id),
+        )
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        return success
 
     @staticmethod
     def add_document(equipment_id: int, file_name: str, file_path: str, file_type: str) -> int:
@@ -102,6 +144,7 @@ class EquipmentModel:
         chunk_index: int,
         chunk_text: str,
         source_label: str,
+        extraction_method: str = "text",
     ) -> int:
         """Salva um trecho indexado de documento."""
         conn = get_connection()
@@ -113,11 +156,12 @@ class EquipmentModel:
                 equipment_id,
                 chunk_index,
                 chunk_text,
-                source_label
+                source_label,
+                extraction_method
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (document_id, equipment_id, chunk_index, chunk_text, source_label),
+            (document_id, equipment_id, chunk_index, chunk_text, source_label, extraction_method),
         )
         conn.commit()
         chunk_id = cursor.lastrowid
@@ -162,6 +206,24 @@ class EquipmentModel:
         chunks = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return chunks
+
+    @staticmethod
+    def update_chunk_embedding(chunk_id: int, embedding_vector: str, embedding_model: str) -> bool:
+        """Salva o embedding de um trecho."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE equipment_document_chunks
+            SET embedding_vector = ?, embedding_model = ?
+            WHERE id = ?
+            """,
+            (embedding_vector, embedding_model, chunk_id),
+        )
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        return success
 
     @staticmethod
     def delete_document_chunks(document_id: int) -> int:

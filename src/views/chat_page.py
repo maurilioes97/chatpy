@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.chat_service import ChatService
 from services.equipment_service import EquipmentService
 from services.llm_service import LLMService, LLMServiceError
-from utils.config import APP_NAME, GEMINI_MODEL, LLM_PROVIDER, OLLAMA_HOST, OLLAMA_MODEL
+from utils.config import LLM_PROVIDER
 
 
 def render_chat():
@@ -25,7 +25,6 @@ def render_chat():
     equipments_result = EquipmentService.get_user_equipments(user_id)
     equipments = equipments_result["equipments"]
     if not equipments:
-        st.title(APP_NAME)
         st.warning("Nenhum equipamento cadastrado ainda.")
         if st.button("Cadastrar equipamento", type="primary", use_container_width=True):
             st.switch_page("pages/equipment_page.py")
@@ -51,19 +50,8 @@ def render_chat():
 
     current_title = st.session_state.get("current_conversation_title", ChatService.DEFAULT_TITLE)
 
-    st.title(APP_NAME)
     st.subheader(selected_equipment["name"])
-    st.caption(selected_equipment["description"])
     st.caption(f"Conversa atual: {current_title}")
-    st.caption(f"Base indexada do equipamento: {equipment_context_result['indexed_chunk_count']} trecho(s)")
-    for summary in equipment_context_result.get("document_summaries", []):
-        st.caption(summary.lstrip("- ").strip())
-
-    document_names = [doc["file_name"] for doc in equipment_context_result["documents"]]
-    if document_names:
-        with st.expander("Documentos tecnicos vinculados ao equipamento"):
-            for document_name in document_names:
-                st.write(f"- {document_name}")
 
     uploaded_document = st.file_uploader(
         "Anexe um documento extra para complementar a analise",
@@ -97,6 +85,14 @@ def render_chat():
         st.error(str(exc))
         return
 
+    user_message_to_store = f"{prompt}{_get_document_note(document_payload)}"
+
+    # Mostra a pergunta imediatamente antes das etapas mais pesadas.
+    with st.chat_message("user", avatar=_get_message_avatar({"role": "user"})):
+        st.write(prompt)
+        if document_payload:
+            st.caption(f"Documento anexado: {document_payload['name']}")
+
     knowledge_result = EquipmentService.search_equipment_knowledge(
         selected_equipment_id,
         user_id,
@@ -105,13 +101,6 @@ def render_chat():
     if not knowledge_result["success"]:
         st.error(knowledge_result["message"])
         return
-
-    user_message_to_store = f"{prompt}{_get_document_note(document_payload)}"
-
-    with st.chat_message("user", avatar="👤"):
-        st.write(prompt)
-        if document_payload:
-            st.caption(f"Documento anexado: {document_payload['name']}")
 
     selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
 
@@ -159,11 +148,89 @@ def render_chat():
                 st.error(f"Erro: {str(exc)}")
 
 
+def _inject_history_styles() -> None:
+    """Aplica um visual mais compacto e arredondado aos itens do historico."""
+    st.markdown(
+        """
+        <style>
+        .stSidebar .st-key-history-list {
+            margin-top: 0.35rem;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item {
+            margin-bottom: 0.65rem;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="stHorizontalBlock"] {
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"] {
+            min-width: 0;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="stButton"] > button {
+            min-height: 2.9rem;
+            border-radius: 999px;
+            border: 1px solid rgba(15, 23, 42, 0.1);
+            padding: 0 0.95rem;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+            transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="stButton"] > button p {
+            width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 0.95rem;
+            font-weight: 500;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"]:first-child [data-testid="stButton"] > button {
+            justify-content: flex-start;
+            background: #f3f4f6;
+            color: #111827;
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"]:first-child [data-testid="stButton"] > button:hover {
+            background: #e5e7eb;
+            border-color: rgba(15, 23, 42, 0.18);
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"]:first-child [data-testid="stButton"] > button[kind="primary"] {
+            background: linear-gradient(180deg, #eef2ff 0%, #e5edff 100%);
+            color: #1e3a8a;
+            border-color: rgba(59, 130, 246, 0.2);
+            box-shadow: 0 8px 20px rgba(59, 130, 246, 0.12);
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"]:last-child button {
+            min-height: 2.9rem;
+            min-width: 2.9rem;
+            border-radius: 1rem;
+            padding: 0;
+            background: #ffffff;
+            color: #374151;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+        }
+
+        .stSidebar .st-key-history-list .st-key-history-item [data-testid="column"]:last-child button:hover {
+            background: #f9fafb;
+            border-color: rgba(15, 23, 42, 0.2);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict], selected_equipment_id: int) -> None:
     """Renderiza a barra lateral da tela de conversas."""
     with st.sidebar:
-        st.markdown(f"### Ola, {username}")
-        st.caption("Bem-vindo!")
+        st.markdown(f'### Ola "{username}"')
         _render_llm_provider_switch()
 
         equipment_ids = list(equipment_map.keys())
@@ -179,23 +246,22 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
             _reset_chat_state()
             st.rerun()
 
-        if st.button("Gerenciar equipamentos", use_container_width=True):
-            st.switch_page("pages/equipment_page.py")
-
         if st.button("Nova conversa", use_container_width=True):
             _start_new_conversation(user_id, selected_equipment_id)
             st.rerun()
 
         st.divider()
         st.subheader("Historico")
+        _inject_history_styles()
         conversations_result = ChatService.get_user_conversations(user_id, selected_equipment_id)
         conversations = conversations_result["conversations"]
 
         if not conversations:
             st.caption("Nenhuma conversa criada ainda para este equipamento.")
 
-        for conversation in conversations:
-            _render_conversation_item(conversation, user_id, selected_equipment_id)
+        with st.container(key="history-list"):
+            for conversation in conversations:
+                _render_conversation_item(conversation, user_id, selected_equipment_id)
 
         st.divider()
 
@@ -215,12 +281,6 @@ def _render_llm_provider_switch() -> None:
 
     selected_provider = "ollama" if use_local_llm else "gemini"
     st.session_state.selected_llm_provider = selected_provider
-
-    if selected_provider == "ollama":
-        st.caption(f"Provider atual: Ollama ({OLLAMA_MODEL})")
-        st.caption(f"Endpoint: {OLLAMA_HOST}")
-    else:
-        st.caption(f"Provider atual: Gemini ({GEMINI_MODEL})")
 
 
 def _get_message_avatar(message: dict) -> str:
@@ -249,45 +309,55 @@ def _render_conversation_item(conversation: dict, user_id: int, equipment_id: in
     if is_current and title == ChatService.DEFAULT_TITLE:
         return
 
-    button_label = f"{'Atual' if is_current else 'Abrir'}: {title[:26]}{'...' if len(title) > 26 else ''}"
-    open_col, action_col = st.columns([6, 1])
+    button_title = title[:34].strip()
+    if len(title) > 34:
+        button_title = f"{button_title}..."
+    button_label = f"Atual: {button_title}" if is_current else button_title
 
-    if open_col.button(button_label, key=f"open_{conversation_id}", use_container_width=True):
-        _load_conversation(conversation_id, user_id)
-        st.rerun()
+    with st.container(key=f"history-item-{conversation_id}"):
+        open_col, action_col = st.columns([6, 1])
 
-    with action_col.popover("...", use_container_width=True):
-        st.caption("Acoes da conversa")
-        st.text_input(
-            "Novo titulo",
-            key=f"title_input_{conversation_id}",
-            value=title,
-            placeholder="Digite um titulo",
-        )
+        if open_col.button(
+            button_label,
+            key=f"open_{conversation_id}",
+            type="primary" if is_current else "secondary",
+            use_container_width=True,
+        ):
+            _load_conversation(conversation_id, user_id)
+            st.rerun()
 
-        if st.button("Salvar titulo", key=f"save_{conversation_id}", use_container_width=True):
-            new_title = st.session_state.get(f"title_input_{conversation_id}", "")
-            update_result = ChatService.update_conversation_title(conversation_id, user_id, new_title)
-            if update_result["success"]:
-                if conversation_id == st.session_state.get("conversation_id"):
-                    st.session_state.current_conversation_title = update_result["title"]
-                st.success("Titulo atualizado.")
-                st.rerun()
+        with action_col.popover(" ", use_container_width=True):
+            st.caption("Acoes da conversa")
+            st.text_input(
+                "Novo titulo",
+                key=f"title_input_{conversation_id}",
+                value=title,
+                placeholder="Digite um titulo",
+            )
 
-            st.error(update_result["message"])
+            if st.button("Salvar titulo", key=f"save_{conversation_id}", use_container_width=True):
+                new_title = st.session_state.get(f"title_input_{conversation_id}", "")
+                update_result = ChatService.update_conversation_title(conversation_id, user_id, new_title)
+                if update_result["success"]:
+                    if conversation_id == st.session_state.get("conversation_id"):
+                        st.session_state.current_conversation_title = update_result["title"]
+                    st.success("Titulo atualizado.")
+                    st.rerun()
 
-        st.divider()
+                st.error(update_result["message"])
 
-        if st.button("Excluir conversa", key=f"delete_{conversation_id}", use_container_width=True):
-            delete_result = ChatService.delete_conversation(conversation_id, user_id)
-            if delete_result["success"]:
-                if conversation_id == st.session_state.get("conversation_id"):
-                    _reset_chat_state()
-                    _load_latest_or_new_conversation(user_id, equipment_id)
-                st.success("Conversa excluida.")
-                st.rerun()
+            st.divider()
 
-            st.error(delete_result["message"])
+            if st.button("Excluir conversa", key=f"delete_{conversation_id}", use_container_width=True):
+                delete_result = ChatService.delete_conversation(conversation_id, user_id)
+                if delete_result["success"]:
+                    if conversation_id == st.session_state.get("conversation_id"):
+                        _reset_chat_state()
+                        _load_latest_or_new_conversation(user_id, equipment_id)
+                    st.success("Conversa excluida.")
+                    st.rerun()
+
+                st.error(delete_result["message"])
 
 
 def _ensure_selected_equipment(equipment_map: dict[int, dict]) -> int:

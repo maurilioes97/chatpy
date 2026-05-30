@@ -2,11 +2,11 @@ import io
 import os
 import re
 import time
-import zipfile
-from xml.etree import ElementTree as ET
 
 from dotenv import load_dotenv
 import google.generativeai as genai
+
+from utils.document_processing import extract_docx_text
 
 load_dotenv()
 
@@ -207,33 +207,10 @@ class GeminiService:
 
     def _extract_docx_text(self, file_bytes: bytes) -> str:
         """Extrai o texto principal de um arquivo DOCX."""
-        try:
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-                xml_content = archive.read("word/document.xml")
-        except KeyError as exc:
-            raise GeminiServiceError("Arquivo DOCX invalido ou sem conteudo legivel.") from exc
-        except zipfile.BadZipFile as exc:
-            raise GeminiServiceError("Arquivo DOCX invalido.") from exc
-
-        root = ET.fromstring(xml_content)
-        paragraphs = []
-        current_parts = []
-
-        for element in root.iter():
-            tag = element.tag.rsplit("}", 1)[-1]
-            if tag == "t" and element.text:
-                current_parts.append(element.text)
-            elif tag == "p":
-                paragraph = "".join(current_parts).strip()
-                if paragraph:
-                    paragraphs.append(paragraph)
-                current_parts = []
-
-        trailing_paragraph = "".join(current_parts).strip()
-        if trailing_paragraph:
-            paragraphs.append(trailing_paragraph)
-
-        return "\n".join(paragraphs)
+        extracted_text = extract_docx_text(file_bytes)
+        if not extracted_text:
+            raise GeminiServiceError("Arquivo DOCX invalido ou sem conteudo legivel.")
+        return extracted_text
 
     def _format_history(self, messages: list) -> list:
         """Formata o historico de mensagens para o Gemini."""

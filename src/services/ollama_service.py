@@ -1,10 +1,8 @@
-import io
 import os
-import zipfile
-from xml.etree import ElementTree as ET
 
 import requests
-from pypdf import PdfReader
+
+from utils.document_processing import extract_docx_text, extract_pdf_text
 
 
 class OllamaServiceError(Exception):
@@ -45,7 +43,10 @@ class OllamaService:
                         "role": "system",
                         "content": (
                             "Voce e um assistente tecnico especializado em equipamentos e manuais industriais. "
-                            "Responda em portugues de forma objetiva e pratica."
+                            "Responda em portugues de forma objetiva, pratica e tecnicamente util. "
+                            "Priorize os documentos e dados fornecidos, mas quando houver lacunas voce pode fazer inferencias tecnicas razoaveis "
+                            "com base em boas praticas e conhecimento geral de manutencao. "
+                            "Sempre deixe claro quando estiver inferindo algo."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -56,7 +57,9 @@ class OllamaService:
                         "role": "system",
                         "content": (
                             "Voce e um assistente tecnico especializado em equipamentos e manuais industriais. "
-                            "Responda em portugues de forma objetiva e pratica."
+                            "Responda em portugues de forma objetiva, pratica e tecnicamente util. "
+                            "Quando faltar contexto especifico, voce pode usar conhecimento tecnico geral e boas praticas de manutencao. "
+                            "Se fizer suposicoes, sinalize isso com clareza."
                         ),
                     },
                     *self._format_history(conversation_history or []),
@@ -142,15 +145,20 @@ class OllamaService:
             if had_direct_matches
             else (
                 "Nao foram encontrados trechos diretamente relevantes para esta pergunta.\n"
-                "Nesse caso, use apenas o resumo de indexacao e os dados gerais do equipamento.\n"
-                "Nao assuma informacoes que nao estejam claramente disponiveis.\n\n"
+                "Nesse caso, priorize os dados gerais do equipamento e os documentos disponiveis.\n"
+                "Se ainda houver lacunas, complemente com inferencias tecnicas razoaveis e boas praticas de manutencao, "
+                "sem inventar dados especificos.\n"
+                "Quando estiver presumindo algo, deixe isso explicito com termos como 'provavelmente', 'e possivel que' ou "
+                "'uma interpretacao plausivel e'.\n\n"
             )
         )
 
         return (
             "Voce e um assistente tecnico especializado em equipamentos e manuais industriais.\n"
-            "Responda com base apenas nas informacoes do equipamento, no historico, nos trechos indexados e nos documentos fornecidos.\n"
-            "Se a resposta nao estiver clara nos dados, diga isso objetivamente.\n"
+            "Priorize as informacoes do equipamento, do historico, dos trechos indexados e dos documentos fornecidos.\n"
+            "Se a resposta nao estiver completamente explicita nos dados, faca a melhor interpretacao tecnica possivel com base em boas praticas.\n"
+            "Voce pode complementar a resposta com conhecimento tecnico geral, desde que nao invente fatos especificos ausentes no material.\n"
+            "Sempre diferencie claramente o que veio dos documentos e o que e inferencia tecnica sua.\n"
             "Quando possivel, explique de forma pratica para um manutentor eletromecanico.\n"
             "Se usar os manuais como base, mencione o trecho ou a pagina de forma natural.\n\n"
             f"{history_section}"
@@ -182,51 +190,16 @@ class OllamaService:
     def _extract_pdf_text(self, file_bytes: bytes) -> str:
         """Extrai texto de todas as paginas de um PDF."""
         try:
-            reader = PdfReader(io.BytesIO(file_bytes))
+            return extract_pdf_text(file_bytes)
         except Exception as exc:
             raise OllamaServiceError("Nao foi possivel ler o PDF anexado.") from exc
 
-        pages = []
-        for page_number, page in enumerate(reader.pages, start=1):
-            try:
-                page_text = (page.extract_text() or "").strip()
-            except Exception:
-                page_text = ""
-
-            if page_text:
-                pages.append(f"[Pagina {page_number}]\n{page_text}")
-
-        return "\n\n".join(pages).strip()
-
     def _extract_docx_text(self, file_bytes: bytes) -> str:
         """Extrai o texto principal de um arquivo DOCX."""
-        try:
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-                xml_content = archive.read("word/document.xml")
-        except KeyError as exc:
-            raise OllamaServiceError("Arquivo DOCX invalido ou sem conteudo legivel.") from exc
-        except zipfile.BadZipFile as exc:
-            raise OllamaServiceError("Arquivo DOCX invalido.") from exc
-
-        root = ET.fromstring(xml_content)
-        paragraphs = []
-        current_parts = []
-
-        for element in root.iter():
-            tag = element.tag.rsplit("}", 1)[-1]
-            if tag == "t" and element.text:
-                current_parts.append(element.text)
-            elif tag == "p":
-                paragraph = "".join(current_parts).strip()
-                if paragraph:
-                    paragraphs.append(paragraph)
-                current_parts = []
-
-        trailing_paragraph = "".join(current_parts).strip()
-        if trailing_paragraph:
-            paragraphs.append(trailing_paragraph)
-
-        return "\n".join(paragraphs)
+        extracted_text = extract_docx_text(file_bytes)
+        if not extracted_text:
+            raise OllamaServiceError("Arquivo DOCX invalido ou sem conteudo legivel.")
+        return extracted_text
 
     def _build_history_text(self, messages: list) -> str:
         """Transforma o historico recente em texto simples para contexto adicional."""

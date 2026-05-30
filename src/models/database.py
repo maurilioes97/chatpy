@@ -1,4 +1,5 @@
 import sqlite3
+import os
 from pathlib import Path
 
 # Diretorio do banco de dados
@@ -34,6 +35,31 @@ def init_db():
     user_columns = {row["name"] for row in cursor.fetchall()}
     if "password_hash" not in user_columns:
         cursor.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''")
+    if "role" not in user_columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+
+    admin_username = os.getenv("ADMIN_USERNAME", "").strip()
+    cursor.execute("SELECT COUNT(*) AS total FROM users WHERE role = 'admin'")
+    admin_count = cursor.fetchone()["total"]
+    if admin_count == 0:
+        if admin_username:
+            cursor.execute("UPDATE users SET role = 'admin' WHERE username = ?", (admin_username,))
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET role = 'admin'
+                    WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+                    """
+                )
+        else:
+            cursor.execute(
+                """
+                UPDATE users
+                SET role = 'admin'
+                WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+                """
+            )
 
     cursor.execute(
         """
@@ -71,12 +97,23 @@ def init_db():
             chunk_index INTEGER NOT NULL,
             chunk_text TEXT NOT NULL,
             source_label TEXT NOT NULL DEFAULT '',
+            extraction_method TEXT NOT NULL DEFAULT 'text',
+            embedding_vector TEXT,
+            embedding_model TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES equipment_documents(id),
             FOREIGN KEY (equipment_id) REFERENCES equipments(id)
         )
         """
     )
+    cursor.execute("PRAGMA table_info(equipment_document_chunks)")
+    chunk_columns = {row["name"] for row in cursor.fetchall()}
+    if "extraction_method" not in chunk_columns:
+        cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'text'")
+    if "embedding_vector" not in chunk_columns:
+        cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN embedding_vector TEXT")
+    if "embedding_model" not in chunk_columns:
+        cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN embedding_model TEXT")
 
     cursor.execute(
         """

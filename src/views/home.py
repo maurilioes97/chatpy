@@ -6,13 +6,9 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.user_service import UserService
-from utils.config import APP_DESCRIPTION, APP_NAME
-
-
 def render_home():
     """Renderiza a pagina inicial."""
-    st.title(APP_NAME)
-    st.markdown(f"### {APP_DESCRIPTION}")
+    st.title("ChatPy - Assistente inteligente para manuais técnicos")
     st.caption("Um assistente tecnico para manutentores consultarem manuais e caracteristicas de equipamentos.")
 
     st.divider()
@@ -22,29 +18,18 @@ def render_home():
     else:
         _render_auth_tabs()
 
-    st.divider()
-    st.markdown(
-        """
-### Sobre o ChatPy
-
-O fluxo do sistema foi pensado para manutencao tecnica:
-
-- o manutentor cria a conta e entra no sistema
-- cadastra cada maquina ou equipamento com descricao tecnica
-- envia manuais e documentos em PDF, DOC ou DOCX
-- inicia conversas separadas por equipamento
-- recebe respostas baseadas no contexto tecnico cadastrado
-"""
-    )
-
 
 def _render_logged_home():
     """Exibe a home para usuario autenticado."""
     username = st.session_state.get("username", "usuario")
+    user_role = _get_current_user_role()
 
     st.subheader("Sessao ativa")
     st.write(f"Voce esta logado como **{username}**.")
-    st.info("O proximo passo e cadastrar ou escolher um equipamento para iniciar o atendimento tecnico.")
+    if user_role == "admin":
+        st.info("Voce pode cadastrar equipamentos e disponibiliza-los para todos os usuarios do sistema.")
+    else:
+        st.info("Os equipamentos cadastrados pelo administrador estao disponiveis para consulta e conversa tecnica.")
 
     equipment_col, chat_col, logout_col = st.columns(3)
 
@@ -101,6 +86,7 @@ def _render_auth_tabs():
                 if result["success"]:
                     st.session_state.user_id = result["user_id"]
                     st.session_state.username = result["username"]
+                    st.session_state.user_role = result["role"]
                     st.success(f"Bem-vindo, {result['username']}!")
                     st.switch_page("pages/equipment_page.py")
                 else:
@@ -127,7 +113,23 @@ def _render_auth_tabs():
                 if result["success"]:
                     st.session_state.user_id = result["user_id"]
                     st.session_state.username = result["username"]
+                    st.session_state.user_role = result["role"]
                     st.success(result["message"])
                     st.switch_page("pages/equipment_page.py")
                 else:
                     st.error(result["message"])
+
+
+def _get_current_user_role() -> str:
+    """Resolve o papel atual do usuario, mesmo em sessoes antigas."""
+    session_role = (st.session_state.get("user_role") or "").strip().lower()
+    if session_role:
+        return session_role
+
+    profile_result = UserService.get_user_profile(st.session_state.user_id)
+    if profile_result["success"]:
+        resolved_role = (profile_result["user"].get("role") or "user").strip().lower()
+        st.session_state.user_role = resolved_role
+        return resolved_role
+
+    return "user"

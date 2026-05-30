@@ -5,15 +5,15 @@ from .database import get_connection
 
 class UserModel:
     @staticmethod
-    def create_user(username: str, email: str, password_hash: str) -> int | None:
+    def create_user(username: str, email: str, password_hash: str, role: str = "user") -> int | None:
         """Cria um novo usuario."""
         conn = get_connection()
         cursor = conn.cursor()
 
         try:
             cursor.execute(
-                "INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)",
-                (username, email, password_hash),
+                "INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)",
+                (username, email, password_hash, role),
             )
             conn.commit()
             return cursor.lastrowid
@@ -41,6 +41,16 @@ class UserModel:
         user = cursor.fetchone()
         conn.close()
         return dict(user) if user else None
+
+    @staticmethod
+    def count_users_by_role(role: str) -> int:
+        """Conta usuarios de um papel especifico."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS total FROM users WHERE role = ?", (role,))
+        total = int(cursor.fetchone()["total"])
+        conn.close()
+        return total
 
     @staticmethod
     def delete_user(user_id: int) -> bool:

@@ -107,23 +107,39 @@ class ChatModel:
         return deleted_count
 
     @staticmethod
-    def delete_equipment_conversations(equipment_id: int, user_id: int) -> int:
+    def delete_equipment_conversations(equipment_id: int, user_id: int | None = None) -> int:
         """Deleta todas as conversas de um equipamento e suas mensagens."""
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            DELETE FROM messages
-            WHERE conversation_id IN (
-                SELECT id FROM conversations WHERE equipment_id = ? AND user_id = ?
+
+        if user_id is None:
+            cursor.execute(
+                """
+                DELETE FROM messages
+                WHERE conversation_id IN (
+                    SELECT id FROM conversations WHERE equipment_id = ?
+                )
+                """,
+                (equipment_id,),
             )
-            """,
-            (equipment_id, user_id),
-        )
-        cursor.execute(
-            "DELETE FROM conversations WHERE equipment_id = ? AND user_id = ?",
-            (equipment_id, user_id),
-        )
+            cursor.execute(
+                "DELETE FROM conversations WHERE equipment_id = ?",
+                (equipment_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                DELETE FROM messages
+                WHERE conversation_id IN (
+                    SELECT id FROM conversations WHERE equipment_id = ? AND user_id = ?
+                )
+                """,
+                (equipment_id, user_id),
+            )
+            cursor.execute(
+                "DELETE FROM conversations WHERE equipment_id = ? AND user_id = ?",
+                (equipment_id, user_id),
+            )
         conn.commit()
         deleted_count = cursor.rowcount
         conn.close()

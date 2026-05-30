@@ -26,7 +26,8 @@ class UserService:
             return {"success": False, "message": "A senha deve ter no minimo 6 caracteres"}
 
         password_hash = UserService._hash_password(password)
-        user_id = UserModel.create_user(username, email, password_hash)
+        role = UserService._resolve_role_for_new_user(username)
+        user_id = UserModel.create_user(username, email, password_hash, role)
 
         if user_id:
             return {
@@ -34,6 +35,7 @@ class UserService:
                 "message": "Usuario criado!",
                 "user_id": user_id,
                 "username": username,
+                "role": role,
             }
         return {"success": False, "message": "Usuario ou email ja existem"}
 
@@ -64,7 +66,12 @@ class UserService:
         if not UserService._verify_password(password, password_hash):
             return {"success": False, "message": "Senha incorreta"}
 
-        return {"success": True, "user_id": user["id"], "username": user["username"]}
+        return {
+            "success": True,
+            "user_id": user["id"],
+            "username": user["username"],
+            "role": (user.get("role") or "user").strip().lower(),
+        }
 
     @staticmethod
     def delete_account(user_id: int) -> dict:
@@ -79,6 +86,26 @@ class UserService:
             return {"success": False, "message": "Nao foi possivel excluir a conta"}
 
         return {"success": True, "message": "Conta excluida com sucesso"}
+
+    @staticmethod
+    def is_admin(user_id: int) -> bool:
+        """Indica se o usuario tem papel de administrador."""
+        user = UserModel.get_user(user_id)
+        return bool(user and (user.get("role") or "").strip().lower() == "admin")
+
+    @staticmethod
+    def _resolve_role_for_new_user(username: str) -> str:
+        """Define o papel inicial de um novo usuario."""
+        normalized_username = (username or "").strip()
+        admin_username = os.getenv("ADMIN_USERNAME", "").strip()
+
+        if admin_username and normalized_username.lower() == admin_username.lower():
+            return "admin"
+
+        if UserModel.count_users_by_role("admin") == 0:
+            return "admin"
+
+        return "user"
 
     @staticmethod
     def _hash_password(password: str) -> str:

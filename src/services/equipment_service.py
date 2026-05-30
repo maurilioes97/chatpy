@@ -1,20 +1,20 @@
-import io
+import json
 import mimetypes
 import re
 import shutil
 import sys
-import zipfile
 from pathlib import Path
 from uuid import uuid4
-from xml.etree import ElementTree as ET
-
-from pypdf import PdfReader
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.chat_model import ChatModel
 from models.equipment_model import EquipmentModel
+from models.user_model import UserModel
+from services.embedding_service import EmbeddingService, EmbeddingServiceError
 from utils.config import EQUIPMENT_FILES_DIR
+from utils.document_processing import extract_docx_text, extract_pdf_pages, normalize_text
 
 
 class EquipmentService:
@@ -32,6 +32,8 @@ class EquipmentService:
     CHUNK_SIZE = 1800
     CHUNK_OVERLAP = 240
     MAX_CHUNKS_FOR_PROMPT = 6
+    SEMANTIC_MATCH_THRESHOLD = 0.18
+    SEMANTIC_SEARCH_WEIGHT = 0.6
     STOPWORDS = {
         "a", "as", "o", "os", "de", "da", "do", "das", "dos", "e", "em", "no", "na", "nos", "nas",
         "um", "uma", "uns", "umas", "para", "por", "com", "sem", "sobre", "que", "como", "qual",
@@ -41,17 +43,17 @@ class EquipmentService:
     }
 
     @staticmethod
-    def register_equipment(user_id: int, name: str, description: str, uploaded_files: list) -> dict:
+    def register_equipment(user_id: int, name: str, description: str, uploaded_files: list, progress_callback=None) -> dict:
         """Cadastra um equipamento e seus documentos."""
+        if not EquipmentService._is_admin(user_id):
+            return {"success": False, "message": "Apenas administradores podem cadastrar equipamentos"}
+
         normalized_name = (name or "").strip()
         normalized_description = (description or "").strip()
         valid_files = [file for file in (uploaded_files or []) if file is not None]
 
-        if len(normalized_name) < 3:
-            return {"success": False, "message": "Informe um nome de equipamento com pelo menos 3 caracteres"}
-
-        if len(normalized_description) < 10:
-            return {"success": False, "message": "Informe uma descricao mais completa do equipamento"}
+        if not normalized_name:
+            return {"success": False, "message": "Informe o nome do equipamento"}
 
         if not valid_files:
             return {"success": False, "message": "Adicione pelo menos um manual ou documento tecnico"}
@@ -61,35 +63,14 @@ class EquipmentService:
             return {"success": False, "message": f"Formato nao suportado para {invalid_file.name}"}
 
         equipment_id = EquipmentModel.create_equipment(user_id, normalized_name, normalized_description)
-        equipment_dir = EquipmentService._get_equipment_directory(user_id, equipment_id)
-        equipment_dir.mkdir(parents=True, exist_ok=True)
-
-        indexed_document_count = 0
-        indexed_chunk_count = 0
 
         try:
-            for uploaded_file in valid_files:
-                file_name = Path(uploaded_file.name).name
-                mime_type = EquipmentService._resolve_mime_type(uploaded_file)
-                file_bytes = uploaded_file.getvalue()
-                saved_path = equipment_dir / f"{uuid4().hex}_{file_name}"
-                saved_path.write_bytes(file_bytes)
-                document_id = EquipmentModel.add_document(
-                    equipment_id,
-                    file_name,
-                    str(saved_path),
-                    mime_type,
-                )
-                chunk_count = EquipmentService._index_document(
-                    document_id=document_id,
-                    equipment_id=equipment_id,
-                    file_name=file_name,
-                    mime_type=mime_type,
-                    file_bytes=file_bytes,
-                )
-                if chunk_count > 0:
-                    indexed_document_count += 1
-                    indexed_chunk_count += chunk_count
+            indexed_document_count, indexed_chunk_count = EquipmentService._store_equipment_documents(
+                user_id=user_id,
+                equipment_id=equipment_id,
+                uploaded_files=valid_files,
+                progress_callback=progress_callback,
+            )
         except Exception as exc:
             EquipmentService.delete_equipment(user_id, equipment_id)
             return {"success": False, "message": f"Erro ao salvar documentos: {str(exc)}"}
@@ -109,15 +90,83 @@ class EquipmentService:
         }
 
     @staticmethod
+    def add_equipment_documents(user_id: int, equipment_id: int, uploaded_files: list, progress_callback=None) -> dict:
+        """Adiciona novos documentos a um equipamento existente."""
+        if not EquipmentService._is_admin(user_id):
+            return {"success": False, "message": "Apenas administradores podem adicionar documentos"}
+
+        equipment = EquipmentModel.get_equipment(equipment_id)
+        if not equipment:
+            return {"success": False, "message": "Equipamento nao encontrado"}
+
+        valid_files = [file for file in (uploaded_files or []) if file is not None]
+        if not valid_files:
+            return {"success": False, "message": "Selecione pelo menos um documento para adicionar"}
+
+        invalid_file = next((file for file in valid_files if not EquipmentService._resolve_mime_type(file)), None)
+        if invalid_file:
+            return {"success": False, "message": f"Formato nao suportado para {invalid_file.name}"}
+
+        try:
+            indexed_document_count, indexed_chunk_count = EquipmentService._store_equipment_documents(
+                user_id=user_id,
+                equipment_id=equipment_id,
+                uploaded_files=valid_files,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            return {"success": False, "message": f"Erro ao salvar documentos: {str(exc)}"}
+
+        message = f"{len(valid_files)} documento(s) adicionado(s) ao equipamento."
+        if indexed_document_count:
+            message += f" {indexed_document_count} documento(s) indexado(s) em {indexed_chunk_count} trecho(s)."
+        else:
+            message += " Os arquivos foram salvos, mas nao geraram indice textual ainda."
+
+        return {
+            "success": True,
+            "message": message,
+            "indexed_document_count": indexed_document_count,
+            "indexed_chunk_count": indexed_chunk_count,
+        }
+
+    @staticmethod
     def get_user_equipments(user_id: int) -> dict:
         """Lista equipamentos do usuario."""
-        equipments = EquipmentModel.get_user_equipments(user_id)
+        equipments = EquipmentModel.get_user_equipments()
         return {"success": True, "equipments": equipments, "total": len(equipments)}
+
+    @staticmethod
+    def update_equipment(user_id: int, equipment_id: int, name: str, description: str) -> dict:
+        """Atualiza os dados principais de um equipamento."""
+        if not EquipmentService._is_admin(user_id):
+            return {"success": False, "message": "Apenas administradores podem editar equipamentos"}
+
+        equipment = EquipmentModel.get_equipment(equipment_id)
+        if not equipment:
+            return {"success": False, "message": "Equipamento nao encontrado"}
+
+        normalized_name = (name or "").strip()
+        normalized_description = (description or "").strip()
+
+        if not normalized_name:
+            return {"success": False, "message": "Informe o nome do equipamento"}
+
+        updated = EquipmentModel.update_equipment(
+            equipment_id,
+            equipment["user_id"],
+            normalized_name,
+            normalized_description,
+        )
+        if not updated:
+            return {"success": False, "message": "Nao foi possivel atualizar o equipamento"}
+
+        return {"success": True, "message": "Equipamento atualizado com sucesso."}
 
     @staticmethod
     def get_equipment(equipment_id: int, user_id: int) -> dict:
         """Retorna dados de um equipamento."""
-        equipment = EquipmentModel.get_equipment(equipment_id, user_id)
+        equipment = EquipmentModel.get_equipment(equipment_id)
         if not equipment:
             return {"success": False, "message": "Equipamento nao encontrado"}
 
@@ -159,7 +208,7 @@ class EquipmentService:
     @staticmethod
     def search_equipment_knowledge(equipment_id: int, user_id: int, query: str, limit: int | None = None) -> dict:
         """Busca os trechos mais relevantes do conhecimento indexado do equipamento."""
-        equipment = EquipmentModel.get_equipment(equipment_id, user_id)
+        equipment = EquipmentModel.get_equipment(equipment_id)
         if not equipment:
             return {"success": False, "message": "Equipamento nao encontrado", "chunks": []}
 
@@ -169,6 +218,7 @@ class EquipmentService:
             return {"success": True, "chunks": [], "total_indexed_chunks": 0}
 
         selected_limit = limit or EquipmentService.MAX_CHUNKS_FOR_PROMPT
+        EquipmentService._ensure_chunk_embeddings(all_chunks)
         ranked_chunks, had_direct_matches = EquipmentService._rank_chunks(query, all_chunks, selected_limit)
         return {
             "success": True,
@@ -180,35 +230,17 @@ class EquipmentService:
     @staticmethod
     def delete_equipment(user_id: int, equipment_id: int) -> dict:
         """Exclui equipamento, documentos e conversas associadas."""
-        equipment = EquipmentModel.get_equipment(equipment_id, user_id)
-        if not equipment:
-            return {"success": False, "message": "Equipamento nao encontrado"}
+        if not EquipmentService._is_admin(user_id):
+            return {"success": False, "message": "Apenas administradores podem excluir equipamentos"}
 
-        documents = EquipmentModel.get_documents(equipment_id)
-        ChatModel.delete_equipment_conversations(equipment_id, user_id)
-        EquipmentModel.delete_documents(equipment_id)
-
-        for doc in documents:
-            file_path = Path(doc["file_path"])
-            if file_path.exists():
-                file_path.unlink()
-
-        equipment_dir = EquipmentService._get_equipment_directory(user_id, equipment_id)
-        if equipment_dir.exists():
-            shutil.rmtree(equipment_dir, ignore_errors=True)
-
-        deleted = EquipmentModel.delete_equipment(equipment_id, user_id)
-        if not deleted:
-            return {"success": False, "message": "Nao foi possivel excluir o equipamento"}
-
-        return {"success": True, "message": "Equipamento excluido com sucesso"}
+        return EquipmentService._delete_equipment_records(user_id, equipment_id)
 
     @staticmethod
     def delete_user_equipments(user_id: int) -> None:
         """Exclui todos os equipamentos e arquivos de um usuario."""
-        equipments = EquipmentModel.get_user_equipments(user_id)
+        equipments = EquipmentModel.get_owned_equipments(user_id)
         for equipment in equipments:
-            EquipmentService.delete_equipment(user_id, equipment["id"])
+            EquipmentService._delete_equipment_records(user_id, equipment["id"])
 
         user_dir = Path(EQUIPMENT_FILES_DIR) / f"user_{user_id}"
         if user_dir.exists():
@@ -217,20 +249,24 @@ class EquipmentService:
     @staticmethod
     def _ensure_equipment_chunks(equipment_id: int, user_id: int) -> None:
         """Garante que documentos indexaveis antigos tambem tenham trechos gerados."""
-        equipment = EquipmentModel.get_equipment(equipment_id, user_id)
+        equipment = EquipmentModel.get_equipment(equipment_id)
         if not equipment:
             return
 
         documents = EquipmentModel.get_documents(equipment_id)
         for document in documents:
-            if int(document.get("chunk_count") or 0) > 0:
-                continue
             if document["file_type"] not in EquipmentService.INDEXABLE_MIME_TYPES:
                 continue
 
             file_path = Path(document["file_path"])
             if not file_path.exists():
                 continue
+
+            existing_chunks = EquipmentModel.get_document_chunks(document["id"])
+            if existing_chunks:
+                if not EquipmentService._chunks_need_reindex(existing_chunks):
+                    continue
+                EquipmentModel.delete_document_chunks(document["id"])
 
             EquipmentService._index_document(
                 document_id=document["id"],
@@ -247,6 +283,7 @@ class EquipmentService:
         file_name: str,
         mime_type: str,
         file_bytes: bytes,
+        progress_callback=None,
     ) -> int:
         """Extrai e salva trechos de um documento."""
         if mime_type not in EquipmentService.INDEXABLE_MIME_TYPES:
@@ -256,94 +293,86 @@ class EquipmentService:
         if existing_chunks:
             return len(existing_chunks)
 
-        extracted_chunks = EquipmentService._extract_chunks(file_name, mime_type, file_bytes)
+        extracted_chunks = EquipmentService._extract_chunks(
+            file_name,
+            mime_type,
+            file_bytes,
+            progress_callback=progress_callback,
+        )
+        if callable(progress_callback):
+            progress_callback(0.82, f"Gravando trechos do documento {file_name}")
+        saved_chunks = []
         for index, chunk in enumerate(extracted_chunks, start=1):
-            EquipmentModel.add_document_chunk(
+            chunk_id = EquipmentModel.add_document_chunk(
                 document_id=document_id,
                 equipment_id=equipment_id,
                 chunk_index=index,
                 chunk_text=chunk["text"],
                 source_label=chunk["source_label"],
+                extraction_method=chunk.get("extraction_method", "text"),
             )
+            saved_chunks.append({"id": chunk_id, "chunk_text": chunk["text"]})
+
+        if callable(progress_callback):
+            progress_callback(0.9, f"Gerando embeddings do documento {file_name}")
+
+        EquipmentService._store_chunk_embeddings(saved_chunks)
+
+        if callable(progress_callback):
+            progress_callback(1.0, f"Documento {file_name} processado")
 
         return len(extracted_chunks)
 
     @staticmethod
-    def _extract_chunks(file_name: str, mime_type: str, file_bytes: bytes) -> list[dict]:
+    def _extract_chunks(file_name: str, mime_type: str, file_bytes: bytes, progress_callback=None) -> list[dict]:
         """Extrai trechos de um documento indexavel."""
         if mime_type == "application/pdf":
-            return EquipmentService._extract_pdf_chunks(file_name, file_bytes)
+            return EquipmentService._extract_pdf_chunks(file_name, file_bytes, progress_callback=progress_callback)
 
         if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            extracted_text = EquipmentService._extract_docx_text(file_bytes)
+            if callable(progress_callback):
+                progress_callback(0.45, f"Extraindo texto do documento {file_name}")
+            extracted_text = extract_docx_text(file_bytes)
+            if callable(progress_callback):
+                progress_callback(0.7, f"Dividindo o documento {file_name} em trechos")
             return EquipmentService._split_text_into_chunks(
                 extracted_text,
                 source_prefix=f"{file_name} - trecho",
+                extraction_method="text",
             )
 
         return []
 
     @staticmethod
-    def _extract_pdf_chunks(file_name: str, file_bytes: bytes) -> list[dict]:
+    def _extract_pdf_chunks(file_name: str, file_bytes: bytes, progress_callback=None) -> list[dict]:
         """Extrai texto de PDF pagina por pagina e divide em trechos."""
-        try:
-            reader = PdfReader(io.BytesIO(file_bytes))
-        except Exception:
-            return []
-
         extracted_chunks = []
-        for page_number, page in enumerate(reader.pages, start=1):
-            try:
-                page_text = page.extract_text() or ""
-            except Exception:
-                page_text = ""
+        page_progress = None
+        if callable(progress_callback):
+            def page_progress(current_page: int, total_pages: int, message: str) -> None:
+                extraction_progress = 0.2 + ((current_page / max(total_pages, 1)) * 0.55)
+                progress_callback(extraction_progress, f"{message} do documento {file_name}")
 
-            normalized_text = EquipmentService._normalize_text(page_text)
-            if not normalized_text:
-                continue
-
+        for page in extract_pdf_pages(file_bytes, progress_callback=page_progress):
+            page_number = page["page_number"]
+            extraction_method = page.get("extraction_method", "text")
+            source_suffix = f"pagina {page_number}"
+            if extraction_method == "ocr":
+                source_suffix += " (OCR)"
             page_chunks = EquipmentService._split_text_into_chunks(
-                normalized_text,
-                source_prefix=f"{file_name} - pagina {page_number}",
+                page["text"],
+                source_prefix=f"{file_name} - {source_suffix}",
+                extraction_method=extraction_method,
             )
             extracted_chunks.extend(page_chunks)
+
+        if callable(progress_callback):
+            progress_callback(0.78, f"Dividindo o PDF {file_name} em trechos")
 
         return extracted_chunks
 
     @staticmethod
-    def _extract_docx_text(file_bytes: bytes) -> str:
-        """Extrai o texto principal de um arquivo DOCX."""
-        try:
-            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-                xml_content = archive.read("word/document.xml")
-        except Exception:
-            return ""
-
-        try:
-            root = ET.fromstring(xml_content)
-        except ET.ParseError:
-            return ""
-
-        paragraphs = []
-        current_parts = []
-        for element in root.iter():
-            tag = element.tag.rsplit("}", 1)[-1]
-            if tag == "t" and element.text:
-                current_parts.append(element.text)
-            elif tag == "p":
-                paragraph = "".join(current_parts).strip()
-                if paragraph:
-                    paragraphs.append(paragraph)
-                current_parts = []
-
-        trailing = "".join(current_parts).strip()
-        if trailing:
-            paragraphs.append(trailing)
-
-        return EquipmentService._normalize_text("\n".join(paragraphs))
-
-    @staticmethod
-    def _split_text_into_chunks(text: str, source_prefix: str) -> list[dict]:
+    def _split_text_into_chunks(text: str, source_prefix: str, extraction_method: str = "text") -> list[dict]:
         """Divide texto grande em trechos sobrepostos."""
         normalized_text = EquipmentService._normalize_text(text)
         if not normalized_text:
@@ -364,7 +393,13 @@ class EquipmentService:
             chunk_text = normalized_text[start:end].strip()
             if chunk_text:
                 source_label = source_prefix if chunk_number == 1 else f"{source_prefix}, trecho {chunk_number}"
-                chunks.append({"text": chunk_text, "source_label": source_label})
+                chunks.append(
+                    {
+                        "text": chunk_text,
+                        "source_label": source_label,
+                        "extraction_method": extraction_method,
+                    }
+                )
 
             if end >= text_length:
                 break
@@ -379,30 +414,49 @@ class EquipmentService:
         """Ranqueia os trechos mais relevantes para a pergunta."""
         query_text = EquipmentService._normalize_text(query).lower()
         query_terms = EquipmentService._extract_terms(query_text)
+        query_embedding = EquipmentService._embed_query(query_text)
 
         scored_chunks = []
+        fallback_chunks = []
         for position, chunk in enumerate(chunks):
             chunk_text = (chunk.get("chunk_text") or "").lower()
             if not chunk_text:
                 continue
 
-            score = 0
+            lexical_score = EquipmentService._score_lexical_match(query_text, query_terms, chunk_text)
+            semantic_score = 0.0
+            if query_embedding is not None:
+                semantic_score = EquipmentService._cosine_similarity(
+                    query_embedding,
+                    EquipmentService._parse_embedding_vector(chunk.get("embedding_vector")),
+                )
+
+            lexical_component = lexical_score / 100.0
+            if query_embedding is None:
+                total_score = lexical_component
+            else:
+                total_score = (
+                    (semantic_score * EquipmentService.SEMANTIC_SEARCH_WEIGHT)
+                    + (lexical_component * (1 - EquipmentService.SEMANTIC_SEARCH_WEIGHT))
+                )
+
             if query_text and query_text in chunk_text:
-                score += 25
+                total_score += 0.18
 
-            for term in query_terms:
-                occurrences = chunk_text.count(term)
-                if occurrences:
-                    score += 5 + (occurrences * 2)
+            if lexical_score > 0 or semantic_score >= EquipmentService.SEMANTIC_MATCH_THRESHOLD:
+                scored_chunks.append((total_score, lexical_score, semantic_score, position, chunk))
+            elif semantic_score > 0:
+                fallback_chunks.append((semantic_score, position, chunk))
 
-            if score > 0:
-                scored_chunks.append((score, position, chunk))
+        if scored_chunks:
+            scored_chunks.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+            return [item[4] for item in scored_chunks[:limit]], True
 
-        if not scored_chunks:
-            return [], False
+        if fallback_chunks:
+            fallback_chunks.sort(key=lambda item: (-item[0], item[1]))
+            return [item[2] for item in fallback_chunks[:limit]], False
 
-        scored_chunks.sort(key=lambda item: (-item[0], item[1]))
-        return [item[2] for item in scored_chunks[:limit]], True
+        return [], False
 
     @staticmethod
     def _build_document_summaries(documents: list[dict]) -> list[str]:
@@ -459,7 +513,7 @@ class EquipmentService:
     @staticmethod
     def _normalize_text(text: str) -> str:
         """Normaliza espacos em branco do texto."""
-        return re.sub(r"\s+", " ", (text or "")).strip()
+        return normalize_text(text)
 
     @staticmethod
     def _get_equipment_directory(user_id: int, equipment_id: int) -> Path:
@@ -471,3 +525,226 @@ class EquipmentService:
         """Resolve o MIME type do arquivo enviado."""
         mime_type = getattr(uploaded_file, "type", "") or mimetypes.guess_type(uploaded_file.name)[0] or ""
         return mime_type if mime_type in EquipmentService.SUPPORTED_MIME_TYPES else None
+
+    @staticmethod
+    def _chunks_need_reindex(chunks: list[dict]) -> bool:
+        """Detecta trechos antigos com texto corrompido por espacamento na extracao."""
+        if not chunks:
+            return False
+
+        sample_text = " ".join((chunk.get("chunk_text") or "")[:500] for chunk in chunks[:3]).strip()
+        if not sample_text:
+            return True
+
+        tokens = sample_text.split()
+        if not tokens:
+            return True
+
+        single_char_ratio = sum(len(token) == 1 for token in tokens) / len(tokens)
+        return single_char_ratio >= 0.35
+
+    @staticmethod
+    def _store_chunk_embeddings(chunks: list[dict]) -> None:
+        """Gera e salva embeddings para os trechos inseridos."""
+        if not chunks:
+            return
+
+        try:
+            embedding_service = EmbeddingService()
+            vectors = embedding_service.embed_texts([chunk["chunk_text"] for chunk in chunks])
+        except EmbeddingServiceError:
+            return
+
+        for chunk, vector in zip(chunks, vectors):
+            vector_json = json.dumps(vector)
+            EquipmentModel.update_chunk_embedding(chunk["id"], vector_json, embedding_service.model_name)
+
+    @staticmethod
+    def _ensure_chunk_embeddings(chunks: list[dict]) -> None:
+        """Preenche embeddings ausentes para documentos ja indexados."""
+        if not chunks:
+            return
+
+        try:
+            embedding_service = EmbeddingService()
+        except EmbeddingServiceError:
+            return
+
+        pending_chunks = []
+        for chunk in chunks:
+            chunk_text = (chunk.get("chunk_text") or "").strip()
+            if not chunk_text:
+                continue
+            if (chunk.get("embedding_vector") or "").strip() and chunk.get("embedding_model") == embedding_service.model_name:
+                continue
+            pending_chunks.append(chunk)
+
+        if not pending_chunks:
+            return
+
+        batch_size = 12
+        for start in range(0, len(pending_chunks), batch_size):
+            batch = pending_chunks[start:start + batch_size]
+            try:
+                vectors = embedding_service.embed_texts([chunk["chunk_text"] for chunk in batch])
+            except EmbeddingServiceError:
+                return
+
+            for chunk, vector in zip(batch, vectors):
+                vector_json = json.dumps(vector)
+                EquipmentModel.update_chunk_embedding(chunk["id"], vector_json, embedding_service.model_name)
+                chunk["embedding_vector"] = vector_json
+                chunk["embedding_model"] = embedding_service.model_name
+
+    @staticmethod
+    def _embed_query(query_text: str) -> list[float] | None:
+        """Gera embedding da consulta, quando disponivel."""
+        if not query_text:
+            return None
+
+        try:
+            return EmbeddingService().embed_text(query_text)
+        except EmbeddingServiceError:
+            return None
+
+    @staticmethod
+    def _score_lexical_match(query_text: str, query_terms: list[str], chunk_text: str) -> int:
+        """Calcula um score lexical para o trecho."""
+        score = 0
+        if query_text and query_text in chunk_text:
+            score += 25
+
+        for term in query_terms:
+            occurrences = chunk_text.count(term)
+            if occurrences:
+                score += 5 + (occurrences * 2)
+
+        return score
+
+    @staticmethod
+    def _parse_embedding_vector(embedding_vector: str | list | None) -> list[float] | None:
+        """Converte o embedding salvo em lista numerica."""
+        if not embedding_vector:
+            return None
+
+        if isinstance(embedding_vector, list):
+            return embedding_vector
+
+        try:
+            parsed = json.loads(embedding_vector)
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+        return parsed if isinstance(parsed, list) else None
+
+    @staticmethod
+    def _cosine_similarity(query_vector: list[float] | None, chunk_vector: list[float] | None) -> float:
+        """Calcula similaridade por cosseno entre consulta e trecho."""
+        if not query_vector or not chunk_vector or len(query_vector) != len(chunk_vector):
+            return 0.0
+
+        query_array = np.array(query_vector, dtype=float)
+        chunk_array = np.array(chunk_vector, dtype=float)
+        denominator = np.linalg.norm(query_array) * np.linalg.norm(chunk_array)
+        if denominator <= 0:
+            return 0.0
+
+        return float(np.dot(query_array, chunk_array) / denominator)
+
+    @staticmethod
+    def _store_equipment_documents(user_id: int, equipment_id: int, uploaded_files: list, progress_callback=None) -> tuple[int, int]:
+        """Salva arquivos e indexa os documentos vinculados ao equipamento."""
+        equipment_dir = EquipmentService._get_equipment_directory(user_id, equipment_id)
+        equipment_dir.mkdir(parents=True, exist_ok=True)
+
+        indexed_document_count = 0
+        indexed_chunk_count = 0
+        total_files = len(uploaded_files)
+        for file_index, uploaded_file in enumerate(uploaded_files, start=1):
+            file_name = Path(uploaded_file.name).name
+            mime_type = EquipmentService._resolve_mime_type(uploaded_file)
+            file_progress_callback = EquipmentService._build_file_progress_callback(
+                progress_callback,
+                file_index,
+                total_files,
+                file_name,
+            )
+            if callable(file_progress_callback):
+                file_progress_callback(0.02, f"Iniciando upload logico do arquivo {file_name}")
+            file_bytes = uploaded_file.getvalue()
+            saved_path = equipment_dir / f"{uuid4().hex}_{file_name}"
+            saved_path.write_bytes(file_bytes)
+            if callable(file_progress_callback):
+                file_progress_callback(0.12, f"Arquivo {file_name} salvo no servidor")
+            document_id = EquipmentModel.add_document(
+                equipment_id,
+                file_name,
+                str(saved_path),
+                mime_type,
+            )
+            chunk_count = EquipmentService._index_document(
+                document_id=document_id,
+                equipment_id=equipment_id,
+                file_name=file_name,
+                mime_type=mime_type,
+                file_bytes=file_bytes,
+                progress_callback=file_progress_callback,
+            )
+            if chunk_count > 0:
+                indexed_document_count += 1
+                indexed_chunk_count += chunk_count
+            if callable(file_progress_callback):
+                file_progress_callback(1.0, f"Arquivo {file_name} concluido")
+
+        return indexed_document_count, indexed_chunk_count
+
+    @staticmethod
+    def _delete_equipment_records(user_id: int, equipment_id: int) -> dict:
+        """Exclui registros e arquivos de um equipamento sem validar papel."""
+        equipment = EquipmentModel.get_equipment(equipment_id)
+        if not equipment:
+            return {"success": False, "message": "Equipamento nao encontrado"}
+
+        documents = EquipmentModel.get_documents(equipment_id)
+        ChatModel.delete_equipment_conversations(equipment_id, user_id)
+        EquipmentModel.delete_documents(equipment_id)
+
+        for doc in documents:
+            file_path = Path(doc["file_path"])
+            if file_path.exists():
+                file_path.unlink()
+
+        equipment_dir = EquipmentService._get_equipment_directory(equipment["user_id"], equipment_id)
+        if equipment_dir.exists():
+            shutil.rmtree(equipment_dir, ignore_errors=True)
+
+        deleted = EquipmentModel.delete_equipment(equipment_id, equipment["user_id"])
+        if not deleted:
+            return {"success": False, "message": "Nao foi possivel excluir o equipamento"}
+
+        return {"success": True, "message": "Equipamento excluido com sucesso"}
+
+    @staticmethod
+    def _is_admin(user_id: int) -> bool:
+        """Confere se o usuario e administrador."""
+        user = UserModel.get_user(user_id)
+        return bool(user and (user.get("role") or "").strip().lower() == "admin")
+
+    @staticmethod
+    def _build_file_progress_callback(progress_callback, file_index: int, total_files: int, file_name: str):
+        """Mapeia o progresso de um arquivo para o progresso total da operacao."""
+        if not callable(progress_callback):
+            return None
+
+        base_progress = (file_index - 1) / max(total_files, 1)
+        progress_span = 1 / max(total_files, 1)
+
+        def callback(file_progress: float, message: str) -> None:
+            bounded_progress = min(max(file_progress, 0.0), 1.0)
+            total_progress = base_progress + (bounded_progress * progress_span)
+            progress_callback(
+                total_progress,
+                f"Arquivo {file_index}/{total_files}: {message or file_name}",
+            )
+
+        return callback
