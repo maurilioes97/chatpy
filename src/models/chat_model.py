@@ -3,13 +3,13 @@ from .database import get_connection
 
 class ChatModel:
     @staticmethod
-    def create_conversation(user_id: int, title: str = "Nova Conversa") -> int:
+    def create_conversation(user_id: int, equipment_id: int | None, title: str = "Nova Conversa") -> int:
         """Cria uma nova conversa."""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
-            (user_id, title),
+            "INSERT INTO conversations (user_id, equipment_id, title) VALUES (?, ?, ?)",
+            (user_id, equipment_id, title),
         )
         conn.commit()
         conversation_id = cursor.lastrowid
@@ -30,14 +30,22 @@ class ChatModel:
         return dict(conversation) if conversation else None
 
     @staticmethod
-    def get_conversations(user_id: int):
-        """Lista todas as conversas de um usuario."""
+    def get_conversations(user_id: int, equipment_id: int | None = None):
+        """Lista as conversas do usuario, com filtro opcional por equipamento."""
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM conversations WHERE user_id = ? ORDER BY id DESC",
-            (user_id,),
-        )
+
+        if equipment_id is None:
+            cursor.execute(
+                "SELECT * FROM conversations WHERE user_id = ? ORDER BY id DESC",
+                (user_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM conversations WHERE user_id = ? AND equipment_id = ? ORDER BY id DESC",
+                (user_id, equipment_id),
+            )
+
         conversations = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return conversations
@@ -93,6 +101,29 @@ class ChatModel:
             (user_id,),
         )
         cursor.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
+        conn.commit()
+        deleted_count = cursor.rowcount
+        conn.close()
+        return deleted_count
+
+    @staticmethod
+    def delete_equipment_conversations(equipment_id: int, user_id: int) -> int:
+        """Deleta todas as conversas de um equipamento e suas mensagens."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM messages
+            WHERE conversation_id IN (
+                SELECT id FROM conversations WHERE equipment_id = ? AND user_id = ?
+            )
+            """,
+            (equipment_id, user_id),
+        )
+        cursor.execute(
+            "DELETE FROM conversations WHERE equipment_id = ? AND user_id = ?",
+            (equipment_id, user_id),
+        )
         conn.commit()
         deleted_count = cursor.rowcount
         conn.close()

@@ -24,7 +24,7 @@ class GeminiService:
             raise GeminiServiceError("GEMINI_API_KEY nao configurada no .env")
 
         genai.configure(api_key=api_key)
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
         self.model = genai.GenerativeModel(self.model_name)
 
     def get_response(
@@ -32,11 +32,22 @@ class GeminiService:
         user_message: str,
         conversation_history: list | None = None,
         document: dict | None = None,
+        equipment_context: str | None = None,
+        knowledge_chunks: list[dict] | None = None,
+        had_direct_matches: bool = False,
     ) -> str:
-        """Obtem resposta do Gemini usando historico e documento opcional."""
+        """Obtem resposta do Gemini usando historico e contexto tecnico opcional."""
         try:
-            if document:
-                return self._get_document_response(user_message, conversation_history or [], document)
+            has_grounding = bool(document or equipment_context or knowledge_chunks)
+            if has_grounding:
+                return self._get_grounded_response(
+                    user_message,
+                    conversation_history or [],
+                    document,
+                    equipment_context,
+                    knowledge_chunks or [],
+                    had_direct_matches,
+                )
 
             history = self._format_history(conversation_history or [])
             chat = self.model.start_chat(history=history)
@@ -44,58 +55,69 @@ class GeminiService:
             return response.text
         except GeminiServiceError:
             raise
-        except Exception as e:
-            raise GeminiServiceError(self._build_friendly_error_message(str(e))) from e
+        except Exception as exc:
+            raise GeminiServiceError(self._build_friendly_error_message(str(exc))) from exc
 
-    def _get_document_response(self, user_message: str, conversation_history: list, document: dict) -> str:
-        """Responde com base em um documento anexado."""
-        file_name = document["name"]
-        mime_type = document["mime_type"]
-        file_bytes = document["content"]
-        prompt = self._build_document_prompt(user_message, conversation_history, file_name)
+    def _get_grounded_response(
+        self,
+        user_message: str,
+        conversation_history: list,
+        document: dict | None,
+        equipment_context: str | None,
+        knowledge_chunks: list[dict],
+        had_direct_matches: bool,
+    ) -> str:
+        """Responde com base em equipamento, trechos indexados e documento extra opcional."""
+        uploaded_files = []
+        text_documents = []
 
-        if mime_type == "application/pdf":
-            return self._get_pdf_response(prompt, file_name, file_bytes)
-
-        if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            extracted_text = self._extract_docx_text(file_bytes)
-            return self._get_text_document_response(prompt, file_name, extracted_text)
-
-        raise GeminiServiceError("Formato de documento nao suportado. Use PDF ou DOCX.")
-
-    def _get_pdf_response(self, prompt: str, file_name: str, file_bytes: bytes) -> str:
-        """Envia um PDF para o Gemini e devolve a resposta."""
-        uploaded_file = None
         try:
-            file_stream = io.BytesIO(file_bytes)
-            file_stream.name = file_name
-            uploaded_file = genai.upload_file(
-                file_stream,
-                mime_type="application/pdf",
-                display_name=file_name,
+            if document:
+                mime_type = document["mime_type"]
+                file_name = document["name"]
+                file_bytes = document["content"]
+
+                if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    extracted_text = self._extract_docx_text(file_bytes)
+                    if extracted_text.strip():
+                        text_documents.append(f"Documento complementar {file_name}:\n{extracted_text[:120000]}")
+                elif mime_type in {"application/pdf", "application/msword"}:
+                    uploaded_file = self._upload_document(file_name, file_bytes, mime_type)
+                    uploaded_files.append(uploaded_file)
+                else:
+                    raise GeminiServiceError(f"Formato de documento nao suportado: {file_name}")
+
+            prompt = self._build_grounded_prompt(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                equipment_context=equipment_context,
+                knowledge_chunks=knowledge_chunks,
+                text_documents=text_documents,
+                has_file_documents=bool(uploaded_files),
+                had_direct_matches=had_direct_matches,
             )
-            self._wait_for_uploaded_file(uploaded_file.name)
-            response = self.model.generate_content([uploaded_file, prompt])
+
+            response_parts = [*uploaded_files, prompt] if uploaded_files else prompt
+            response = self.model.generate_content(response_parts)
             return response.text
         finally:
-            if uploaded_file is not None:
+            for uploaded_file in uploaded_files:
                 try:
                     genai.delete_file(uploaded_file.name)
                 except Exception:
                     pass
 
-    def _get_text_document_response(self, prompt: str, file_name: str, extracted_text: str) -> str:
-        """Usa o texto extraido de um DOCX como contexto da resposta."""
-        if not extracted_text.strip():
-            raise GeminiServiceError(f"Nao consegui extrair texto de {file_name}.")
-
-        full_prompt = (
-            f"{prompt}\n\n"
-            f"Conteudo do documento ({file_name}):\n"
-            f"{extracted_text[:120000]}"
+    def _upload_document(self, file_name: str, file_bytes: bytes, mime_type: str):
+        """Envia documento temporario para o Gemini."""
+        file_stream = io.BytesIO(file_bytes)
+        file_stream.name = file_name
+        uploaded_file = genai.upload_file(
+            file_stream,
+            mime_type=mime_type,
+            display_name=file_name,
         )
-        response = self.model.generate_content(full_prompt)
-        return response.text
+        self._wait_for_uploaded_file(uploaded_file.name)
+        return uploaded_file
 
     def _wait_for_uploaded_file(self, file_name: str, max_attempts: int = 12, delay_seconds: int = 2) -> None:
         """Aguarda o arquivo enviado ficar pronto para uso."""
@@ -111,19 +133,66 @@ class GeminiService:
 
             time.sleep(delay_seconds)
 
-    def _build_document_prompt(self, user_message: str, conversation_history: list, file_name: str) -> str:
-        """Monta o prompt com instrucao para responder com base no documento."""
+    def _build_grounded_prompt(
+        self,
+        user_message: str,
+        conversation_history: list,
+        equipment_context: str | None,
+        knowledge_chunks: list[dict],
+        text_documents: list[str],
+        has_file_documents: bool,
+        had_direct_matches: bool,
+    ) -> str:
+        """Monta prompt tecnico com base em equipamento, trechos e documentos."""
         history_text = self._build_history_text(conversation_history)
         history_section = f"Historico recente:\n{history_text}\n\n" if history_text else ""
+        equipment_section = f"Dados do equipamento:\n{equipment_context}\n\n" if equipment_context else ""
+
+        chunk_lines = []
+        for index, chunk in enumerate(knowledge_chunks, start=1):
+            source_label = chunk.get("source_label") or "Trecho tecnico"
+            file_name = chunk.get("file_name") or "Documento"
+            chunk_text = (chunk.get("chunk_text") or "").strip()
+            if chunk_text:
+                chunk_lines.append(
+                    f"[Trecho {index}] {file_name} | {source_label}\n{chunk_text}"
+                )
+
+        chunks_section = ""
+        if chunk_lines:
+            chunks_section = "Trechos mais relevantes dos manuais:\n" + "\n\n".join(chunk_lines) + "\n\n"
+
+        documents_section = ""
+        if text_documents:
+            documents_section = "Conteudo textual de documento complementar:\n" + "\n\n".join(text_documents) + "\n\n"
+
+        file_docs_section = ""
+        if has_file_documents:
+            file_docs_section = "Um arquivo complementar foi anexado a esta consulta. Considere-o na resposta.\n\n"
+
+        retrieval_section = (
+            "Foram encontrados trechos diretamente relevantes para esta pergunta.\n\n"
+            if had_direct_matches
+            else (
+                "Nao foram encontrados trechos diretamente relevantes para esta pergunta.\n"
+                "Nesse caso, use apenas o resumo de indexacao e os dados gerais do equipamento.\n"
+                "Nao afirme que o manual termina nas primeiras paginas so porque poucos trechos foram mostrados.\n\n"
+            )
+        )
 
         return (
-            "Voce vai responder com base no documento anexado.\n"
-            "Use o conteudo do documento como fonte principal.\n"
-            "Se a resposta nao estiver no documento, diga isso claramente.\n"
-            "Quando fizer sentido, cite trechos ou secoes relevantes de forma resumida.\n\n"
+            "Voce e um assistente tecnico especializado em equipamentos e manuais industriais.\n"
+            "Responda com base apenas nas informacoes do equipamento, no historico, nos trechos indexados e nos documentos fornecidos.\n"
+            "Se a resposta nao estiver clara nos dados, diga isso objetivamente.\n"
+            "Quando possivel, explique de forma pratica para um manutentor eletromecanico.\n"
+            "Se usar os manuais como base, mencione o trecho ou a pagina de forma natural.\n\n"
             f"{history_section}"
-            f"Documento anexado: {file_name}\n"
-            f"Pergunta do usuario: {user_message}"
+            f"{equipment_section}"
+            f"{retrieval_section}"
+            f"{chunks_section}"
+            f"{documents_section}"
+            f"{file_docs_section}"
+            f"Pergunta do manutentor: {user_message}"
         )
 
     def _build_history_text(self, messages: list) -> str:

@@ -14,6 +14,7 @@ st.set_page_config(**STREAMLIT_CONFIG)
 
 pages = [
     st.Page("pages/home_page.py", title="Página inicial", icon="🏠", default=True),
+    st.Page("pages/equipment_page.py", title="Equipamentos", icon="🛠️"),
     st.Page("pages/chat_page.py", title="Conversas", icon="💬"),
 ]
 

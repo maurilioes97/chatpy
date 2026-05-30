@@ -7,6 +7,7 @@ load_dotenv()
 # Caminhos
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+EQUIPMENT_FILES_DIR = os.path.join(DATA_DIR, "equipment_files")
 
 # Configuracoes da aplicacao
 APP_NAME = "ChatPy - Assistente inteligente IA"

@@ -6,4 +6,5 @@ __pycache__/
 *.pyd
 .Python
 data/chatbot.db
+data/equipment_files/
 .streamlit/secrets.toml

@@ -13,10 +13,10 @@ class ChatService:
     DEFAULT_TITLE = "Nova Conversa"
 
     @staticmethod
-    def start_conversation(user_id: int, title: str | None = None) -> dict:
+    def start_conversation(user_id: int, equipment_id: int | None, title: str | None = None) -> dict:
         """Inicia uma nova conversa."""
         conversation_title = title or ChatService.DEFAULT_TITLE
-        conversation_id = ChatModel.create_conversation(user_id, conversation_title)
+        conversation_id = ChatModel.create_conversation(user_id, equipment_id, conversation_title)
 
         return {
             "success": True,
@@ -34,10 +34,9 @@ class ChatService:
         return {"success": True, "conversation": conversation}
 
     @staticmethod
-    def get_user_conversations(user_id: int) -> dict:
+    def get_user_conversations(user_id: int, equipment_id: int | None = None) -> dict:
         """Lista todas as conversas do usuario."""
-        conversations = ChatModel.get_conversations(user_id)
-
+        conversations = ChatModel.get_conversations(user_id, equipment_id)
         return {
             "success": True,
             "conversations": conversations,

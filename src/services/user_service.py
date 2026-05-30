@@ -6,8 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models.chat_model import ChatModel
 from models.user_model import UserModel
+from services.equipment_service import EquipmentService
 
 
 class UserService:
@@ -29,7 +29,12 @@ class UserService:
         user_id = UserModel.create_user(username, email, password_hash)
 
         if user_id:
-            return {"success": True, "message": "Usuario criado!", "user_id": user_id}
+            return {
+                "success": True,
+                "message": "Usuario criado!",
+                "user_id": user_id,
+                "username": username,
+            }
         return {"success": False, "message": "Usuario ou email ja existem"}
 
     @staticmethod
@@ -68,7 +73,7 @@ class UserService:
         if not user:
             return {"success": False, "message": "Usuario nao encontrado"}
 
-        ChatModel.delete_user_conversations(user_id)
+        EquipmentService.delete_user_equipments(user_id)
         deleted = UserModel.delete_user(user_id)
         if not deleted:
             return {"success": False, "message": "Nao foi possivel excluir a conta"}

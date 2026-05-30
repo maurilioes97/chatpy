@@ -1,0 +1,198 @@
+from .database import get_connection
+
+
+class EquipmentModel:
+    @staticmethod
+    def create_equipment(user_id: int, name: str, description: str) -> int:
+        """Cria um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO equipments (user_id, name, description) VALUES (?, ?, ?)",
+            (user_id, name, description),
+        )
+        conn.commit()
+        equipment_id = cursor.lastrowid
+        conn.close()
+        return equipment_id
+
+    @staticmethod
+    def get_equipment(equipment_id: int, user_id: int):
+        """Retorna um equipamento do usuario."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM equipments WHERE id = ? AND user_id = ?",
+            (equipment_id, user_id),
+        )
+        equipment = cursor.fetchone()
+        conn.close()
+        return dict(equipment) if equipment else None
+
+    @staticmethod
+    def get_user_equipments(user_id: int):
+        """Lista equipamentos do usuario."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                equipments.*,
+                COUNT(DISTINCT equipment_documents.id) AS document_count,
+                COUNT(DISTINCT equipment_document_chunks.id) AS chunk_count
+            FROM equipments
+            LEFT JOIN equipment_documents
+                ON equipment_documents.equipment_id = equipments.id
+            LEFT JOIN equipment_document_chunks
+                ON equipment_document_chunks.equipment_id = equipments.id
+            WHERE equipments.user_id = ?
+            GROUP BY equipments.id
+            ORDER BY equipments.id DESC
+            """,
+            (user_id,),
+        )
+        equipments = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return equipments
+
+    @staticmethod
+    def add_document(equipment_id: int, file_name: str, file_path: str, file_type: str) -> int:
+        """Adiciona documento a um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO equipment_documents (equipment_id, file_name, file_path, file_type)
+            VALUES (?, ?, ?, ?)
+            """,
+            (equipment_id, file_name, file_path, file_type),
+        )
+        conn.commit()
+        document_id = cursor.lastrowid
+        conn.close()
+        return document_id
+
+    @staticmethod
+    def get_documents(equipment_id: int):
+        """Lista documentos de um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                equipment_documents.*,
+                COUNT(equipment_document_chunks.id) AS chunk_count
+            FROM equipment_documents
+            LEFT JOIN equipment_document_chunks
+                ON equipment_document_chunks.document_id = equipment_documents.id
+            WHERE equipment_documents.equipment_id = ?
+            GROUP BY equipment_documents.id
+            ORDER BY equipment_documents.id ASC
+            """,
+            (equipment_id,),
+        )
+        documents = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return documents
+
+    @staticmethod
+    def add_document_chunk(
+        document_id: int,
+        equipment_id: int,
+        chunk_index: int,
+        chunk_text: str,
+        source_label: str,
+    ) -> int:
+        """Salva um trecho indexado de documento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO equipment_document_chunks (
+                document_id,
+                equipment_id,
+                chunk_index,
+                chunk_text,
+                source_label
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (document_id, equipment_id, chunk_index, chunk_text, source_label),
+        )
+        conn.commit()
+        chunk_id = cursor.lastrowid
+        conn.close()
+        return chunk_id
+
+    @staticmethod
+    def get_document_chunks(document_id: int):
+        """Lista os trechos de um documento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM equipment_document_chunks
+            WHERE document_id = ?
+            ORDER BY chunk_index ASC, id ASC
+            """,
+            (document_id,),
+        )
+        chunks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return chunks
+
+    @staticmethod
+    def get_equipment_chunks(equipment_id: int):
+        """Lista todos os trechos de um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                equipment_document_chunks.*,
+                equipment_documents.file_name
+            FROM equipment_document_chunks
+            INNER JOIN equipment_documents
+                ON equipment_documents.id = equipment_document_chunks.document_id
+            WHERE equipment_document_chunks.equipment_id = ?
+            ORDER BY equipment_document_chunks.chunk_index ASC, equipment_document_chunks.id ASC
+            """,
+            (equipment_id,),
+        )
+        chunks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return chunks
+
+    @staticmethod
+    def delete_document_chunks(document_id: int) -> int:
+        """Remove os trechos de um documento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM equipment_document_chunks WHERE document_id = ?", (document_id,))
+        conn.commit()
+        deleted_count = cursor.rowcount
+        conn.close()
+        return deleted_count
+
+    @staticmethod
+    def delete_documents(equipment_id: int) -> int:
+        """Remove metadados de documentos de um equipamento."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM equipment_document_chunks WHERE equipment_id = ?", (equipment_id,))
+        cursor.execute("DELETE FROM equipment_documents WHERE equipment_id = ?", (equipment_id,))
+        conn.commit()
+        deleted_count = cursor.rowcount
+        conn.close()
+        return deleted_count
+
+    @staticmethod
+    def delete_equipment(equipment_id: int, user_id: int) -> bool:
+        """Remove um equipamento do usuario."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM equipments WHERE id = ? AND user_id = ?", (equipment_id, user_id))
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        return success
