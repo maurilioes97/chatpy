@@ -11,7 +11,7 @@ EQUIPMENT_FILES_DIR = os.path.join(DATA_DIR, "equipment_files")
 
 # Configuracoes da aplicacao
 APP_NAME = "ChatPy - Assistente inteligente IA"
-APP_DESCRIPTION = "Seu assistente inteligente com IA Gemini"
+APP_DESCRIPTION = "Seu assistente inteligente com IA para manuais tecnicos"
 
 # Configuracoes Streamlit
 STREAMLIT_CONFIG = {
@@ -21,5 +21,9 @@ STREAMLIT_CONFIG = {
     "initial_sidebar_state": "expanded",
 }
 
-# Configuracoes Gemini
+# Configuracoes dos providers de IA
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")

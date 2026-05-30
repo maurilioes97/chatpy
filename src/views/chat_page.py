@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.chat_service import ChatService
 from services.equipment_service import EquipmentService
-from services.gemini_service import GeminiService, GeminiServiceError
-from utils.config import APP_NAME
+from services.llm_service import LLMService, LLMServiceError
+from utils.config import APP_NAME, GEMINI_MODEL, LLM_PROVIDER, OLLAMA_HOST, OLLAMA_MODEL
 
 
 def render_chat():
@@ -39,6 +39,8 @@ def render_chat():
 
     if "document_uploader_key" not in st.session_state:
         st.session_state.document_uploader_key = 0
+    if "selected_llm_provider" not in st.session_state:
+        st.session_state.selected_llm_provider = LLM_PROVIDER.strip().lower()
 
     _render_sidebar(user_id, username, equipment_map, selected_equipment_id)
 
@@ -74,7 +76,10 @@ def render_chat():
         st.info(f"Documento pronto para consulta: {uploaded_document.name}")
 
     for message in st.session_state.get("messages", []):
-        with st.chat_message(message["role"]):
+        with st.chat_message(
+            message["role"],
+            avatar=_get_message_avatar(message),
+        ):
             st.write(message["content"])
 
     prompt = st.chat_input("Pergunte algo sobre este equipamento...")
@@ -103,16 +108,18 @@ def render_chat():
 
     user_message_to_store = f"{prompt}{_get_document_note(document_payload)}"
 
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.write(prompt)
         if document_payload:
             st.caption(f"Documento anexado: {document_payload['name']}")
 
-    with st.chat_message("assistant"):
+    selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+
+    with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
         with st.spinner("Pensando..."):
             try:
-                gemini = GeminiService()
-                response = gemini.get_response(
+                llm_service = LLMService(selected_provider)
+                response = llm_service.get_response(
                     prompt,
                     st.session_state.messages,
                     document=document_payload,
@@ -134,13 +141,19 @@ def render_chat():
                     return
 
                 st.session_state.messages.append({"role": "user", "content": user_message_to_store})
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response,
+                        "provider": selected_provider,
+                    }
+                )
                 if save_result.get("title"):
                     st.session_state.current_conversation_title = save_result["title"]
                 if document_payload:
                     st.session_state.document_uploader_key += 1
                 st.rerun()
-            except GeminiServiceError as exc:
+            except LLMServiceError as exc:
                 st.warning(str(exc))
             except Exception as exc:
                 st.error(f"Erro: {str(exc)}")
@@ -151,6 +164,7 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
     with st.sidebar:
         st.markdown(f"### Ola, {username}")
         st.caption("Bem-vindo!")
+        _render_llm_provider_switch()
 
         equipment_ids = list(equipment_map.keys())
         selected_option = st.selectbox(
@@ -188,6 +202,42 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
         if st.button("Sair", use_container_width=True):
             st.session_state.clear()
             st.switch_page("pages/home_page.py")
+
+
+def _render_llm_provider_switch() -> None:
+    """Permite alternar entre IA local e API Gemini pela interface."""
+    current_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+    use_local_llm = st.toggle(
+        "Usar IA local",
+        value=current_provider == "ollama",
+        help="Ative para usar o Ollama local. Desative para usar a API do Gemini.",
+    )
+
+    selected_provider = "ollama" if use_local_llm else "gemini"
+    st.session_state.selected_llm_provider = selected_provider
+
+    if selected_provider == "ollama":
+        st.caption(f"Provider atual: Ollama ({OLLAMA_MODEL})")
+        st.caption(f"Endpoint: {OLLAMA_HOST}")
+    else:
+        st.caption(f"Provider atual: Gemini ({GEMINI_MODEL})")
+
+
+def _get_message_avatar(message: dict) -> str:
+    """Resolve o avatar de cada mensagem do chat."""
+    role = message.get("role")
+    if role == "user":
+        return "👤"
+
+    provider = (message.get("provider") or st.session_state.get("selected_llm_provider") or LLM_PROVIDER).strip().lower()
+    return _get_assistant_avatar(provider)
+
+
+def _get_assistant_avatar(provider_name: str) -> str:
+    """Define um avatar visual para cada provider."""
+    if provider_name == "ollama":
+        return "🦙"
+    return "🤖"
 
 
 def _render_conversation_item(conversation: dict, user_id: int, equipment_id: int) -> None:
