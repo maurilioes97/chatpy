@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.chat_service import ChatService
-from services.gemini_service import GeminiService
+from services.gemini_service import GeminiService, GeminiServiceError
 from utils.config import APP_NAME
 
 
@@ -33,8 +33,6 @@ def _start_new_conversation(user_id: int):
     st.session_state.conversation_id = result["conversation_id"]
     st.session_state.messages = []
     st.session_state.current_conversation_title = ChatService.DEFAULT_TITLE
-    st.session_state.editing_conversation_id = None
-    st.session_state.pending_delete_conversation_id = None
 
 
 def _select_fallback_conversation(user_id: int):
@@ -76,7 +74,7 @@ def render_chat():
     """Renderiza a pagina de chat."""
     if "user_id" not in st.session_state:
         st.error("❌ Você precisa estar logado!")
-        st.switch_page("app.py")
+        st.switch_page("pages/home_page.py")
         return
 
     user_id = st.session_state.user_id
@@ -99,8 +97,8 @@ def render_chat():
         st.session_state.document_uploader_key = 0
 
     with st.sidebar:
-        st.title("💬 ChatBot")
-        st.markdown(f"**Usuário:** {username}")
+        st.markdown(f"### Olá, {username}")
+        st.caption("Bem-vindo!")
 
         if st.button("➕ Nova Conversa", use_container_width=True):
             _start_new_conversation(user_id)
@@ -117,55 +115,38 @@ def render_chat():
             conv_id = conv["id"]
             title = conv["title"] or ChatService.DEFAULT_TITLE
             is_current = conv_id == st.session_state.get("conversation_id")
+            if is_current and title == ChatService.DEFAULT_TITLE:
+                continue
             select_label = f"{'👉' if is_current else '📄'} {title[:28]}{'...' if len(title) > 28 else ''}"
 
-            open_col, edit_col, delete_col = st.columns([6, 1, 1])
+            open_col, action_col = st.columns([6, 1])
 
             if open_col.button(select_label, key=f"open_{conv_id}", use_container_width=True):
                 _load_conversation(conv_id, user_id)
-                st.session_state.editing_conversation_id = None
-                st.session_state.pending_delete_conversation_id = None
                 st.rerun()
 
-            if edit_col.button("✏️", key=f"edit_{conv_id}", use_container_width=True):
-                st.session_state.editing_conversation_id = conv_id
-                st.session_state.pending_delete_conversation_id = None
-                st.session_state[f"title_input_{conv_id}"] = title
-
-            if delete_col.button("🗑️", key=f"delete_{conv_id}", use_container_width=True):
-                st.session_state.pending_delete_conversation_id = conv_id
-                st.session_state.editing_conversation_id = None
-
-            if st.session_state.get("editing_conversation_id") == conv_id:
-                st.text_input(
+            with action_col.popover("⋯", use_container_width=True):
+                st.caption("Ações da conversa")
+                new_title = st.text_input(
                     "Novo título",
                     key=f"title_input_{conv_id}",
-                    label_visibility="collapsed",
                     placeholder="Digite um título",
                 )
-                save_col, cancel_col = st.columns(2)
 
-                if save_col.button("Salvar", key=f"save_{conv_id}", use_container_width=True):
+                if st.button("Salvar título", key=f"save_{conv_id}", use_container_width=True):
                     new_title = st.session_state.get(f"title_input_{conv_id}", "")
                     update_result = ChatService.update_conversation_title(conv_id, user_id, new_title)
                     if update_result["success"]:
                         if conv_id == st.session_state.get("conversation_id"):
                             st.session_state.current_conversation_title = update_result["title"]
-                        st.session_state.editing_conversation_id = None
                         st.success("Título atualizado.")
                         st.rerun()
                     else:
                         st.error(f"❌ {update_result['message']}")
 
-                if cancel_col.button("Cancelar", key=f"cancel_{conv_id}", use_container_width=True):
-                    st.session_state.editing_conversation_id = None
-                    st.rerun()
+                st.divider()
 
-            if st.session_state.get("pending_delete_conversation_id") == conv_id:
-                st.warning("Excluir esta conversa?")
-                confirm_col, keep_col = st.columns(2)
-
-                if confirm_col.button("Confirmar", key=f"confirm_delete_{conv_id}", use_container_width=True):
+                if st.button("Excluir conversa", key=f"delete_{conv_id}", use_container_width=True):
                     delete_result = ChatService.delete_conversation(conv_id, user_id)
                     if delete_result["success"]:
                         if conv_id == st.session_state.get("conversation_id"):
@@ -174,24 +155,19 @@ def render_chat():
                             st.session_state.pop("current_conversation_title", None)
                             _select_fallback_conversation(user_id)
 
-                        st.session_state.pending_delete_conversation_id = None
                         st.success("Conversa excluída.")
                         st.rerun()
                     else:
                         st.error(f"❌ {delete_result['message']}")
 
-                if keep_col.button("Cancelar", key=f"cancel_delete_{conv_id}", use_container_width=True):
-                    st.session_state.pending_delete_conversation_id = None
-                    st.rerun()
-
         st.divider()
 
         if st.button("🚪 Sair", use_container_width=True):
             st.session_state.clear()
-            st.switch_page("app.py")
+            st.switch_page("pages/home_page.py")
 
     current_title = st.session_state.get("current_conversation_title", ChatService.DEFAULT_TITLE)
-    st.title(f"🤖 {APP_NAME}")
+    st.title(APP_NAME)
     st.caption(f"Conversa atual: {current_title}")
 
     uploaded_document = st.file_uploader(
@@ -255,5 +231,7 @@ def render_chat():
                         st.rerun()
                     else:
                         st.error(f"❌ {save_result['message']}")
+                except GeminiServiceError as e:
+                    st.warning(f"⚠️ {str(e)}")
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")

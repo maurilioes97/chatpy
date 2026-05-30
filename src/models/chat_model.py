@@ -84,6 +84,21 @@ class ChatModel:
         return messages
 
     @staticmethod
+    def delete_user_conversations(user_id: int) -> int:
+        """Deleta todas as conversas e mensagens de um usuario."""
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
+            (user_id,),
+        )
+        cursor.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
+        conn.commit()
+        deleted_count = cursor.rowcount
+        conn.close()
+        return deleted_count
+
+    @staticmethod
     def delete_conversation(conversation_id: int, user_id: int) -> bool:
         """Deleta uma conversa do usuario e suas mensagens."""
         conn = get_connection()

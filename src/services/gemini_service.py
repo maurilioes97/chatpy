@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import time
 import zipfile
 from xml.etree import ElementTree as ET
@@ -10,17 +11,21 @@ import google.generativeai as genai
 load_dotenv()
 
 
+class GeminiServiceError(Exception):
+    """Erro tratavel da integracao com Gemini."""
+
+
 class GeminiService:
     """Servico de integracao com a API Gemini."""
 
     def __init__(self):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GEMINI_API_KEY nao configurada no .env")
+            raise GeminiServiceError("GEMINI_API_KEY nao configurada no .env")
 
         genai.configure(api_key=api_key)
-        model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-        self.model = genai.GenerativeModel(model_name)
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+        self.model = genai.GenerativeModel(self.model_name)
 
     def get_response(
         self,
@@ -37,8 +42,10 @@ class GeminiService:
             chat = self.model.start_chat(history=history)
             response = chat.send_message(user_message)
             return response.text
+        except GeminiServiceError:
+            raise
         except Exception as e:
-            return f"Erro ao comunicar com Gemini: {str(e)}"
+            raise GeminiServiceError(self._build_friendly_error_message(str(e))) from e
 
     def _get_document_response(self, user_message: str, conversation_history: list, document: dict) -> str:
         """Responde com base em um documento anexado."""
@@ -54,7 +61,7 @@ class GeminiService:
             extracted_text = self._extract_docx_text(file_bytes)
             return self._get_text_document_response(prompt, file_name, extracted_text)
 
-        raise ValueError("Formato de documento nao suportado. Use PDF ou DOCX.")
+        raise GeminiServiceError("Formato de documento nao suportado. Use PDF ou DOCX.")
 
     def _get_pdf_response(self, prompt: str, file_name: str, file_bytes: bytes) -> str:
         """Envia um PDF para o Gemini e devolve a resposta."""
@@ -80,7 +87,7 @@ class GeminiService:
     def _get_text_document_response(self, prompt: str, file_name: str, extracted_text: str) -> str:
         """Usa o texto extraido de um DOCX como contexto da resposta."""
         if not extracted_text.strip():
-            raise ValueError(f"Nao consegui extrair texto de {file_name}.")
+            raise GeminiServiceError(f"Nao consegui extrair texto de {file_name}.")
 
         full_prompt = (
             f"{prompt}\n\n"
@@ -100,7 +107,7 @@ class GeminiService:
             if state_name in {"ACTIVE", "SUCCEEDED", ""}:
                 return
             if state_name == "FAILED":
-                raise ValueError("O Gemini nao conseguiu processar o arquivo enviado.")
+                raise GeminiServiceError("O Gemini nao conseguiu processar o arquivo enviado.")
 
             time.sleep(delay_seconds)
 
@@ -135,9 +142,9 @@ class GeminiService:
             with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
                 xml_content = archive.read("word/document.xml")
         except KeyError as exc:
-            raise ValueError("Arquivo DOCX invalido ou sem conteudo legivel.") from exc
+            raise GeminiServiceError("Arquivo DOCX invalido ou sem conteudo legivel.") from exc
         except zipfile.BadZipFile as exc:
-            raise ValueError("Arquivo DOCX invalido.") from exc
+            raise GeminiServiceError("Arquivo DOCX invalido.") from exc
 
         root = ET.fromstring(xml_content)
         paragraphs = []
@@ -170,3 +177,33 @@ class GeminiService:
             role = "user" if msg.get("role") == "user" else "model"
             formatted.append({"role": role, "parts": [content]})
         return formatted
+
+    def _build_friendly_error_message(self, raw_error: str) -> str:
+        """Traduz erros tecnicos do Gemini para mensagens mais uteis na UI."""
+        lowered_error = raw_error.lower()
+
+        if "429" in raw_error or "quota" in lowered_error or "rate limit" in lowered_error:
+            retry_delay = self._extract_retry_delay(raw_error)
+            wait_hint = f" Aguarde cerca de {retry_delay} segundos e tente novamente." if retry_delay else ""
+            return (
+                f"Limite de uso do Gemini atingido para o modelo {self.model_name}.{wait_hint} "
+                "Se isso continuar acontecendo, voce provavelmente esgotou a cota gratuita atual "
+                "e vai precisar trocar de modelo na variavel GEMINI_MODEL ou revisar billing/cota da conta."
+            )
+
+        if "api key" in lowered_error or "permission denied" in lowered_error:
+            return "Falha de autenticacao com o Gemini. Verifique a GEMINI_API_KEY e as permissoes da conta."
+
+        return f"Erro ao comunicar com Gemini: {raw_error}"
+
+    def _extract_retry_delay(self, raw_error: str) -> int | None:
+        """Tenta extrair o tempo sugerido para nova tentativa."""
+        patterns = [
+            r"retry in\s+(\d+(?:\.\d+)?)s",
+            r"retry_delay\s*\{\s*seconds:\s*(\d+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, raw_error, flags=re.IGNORECASE)
+            if match:
+                return max(1, round(float(match.group(1))))
+        return None
