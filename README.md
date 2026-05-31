@@ -75,7 +75,7 @@ Variaveis principais:
 ## Exemplo de `.env`
 
 ```env
-LLM_PROVIDER=ollama
+LLM_PROVIDER=gemini
 
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=deepseek-r1:8b

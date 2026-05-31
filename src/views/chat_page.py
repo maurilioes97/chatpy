@@ -9,7 +9,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.chat_service import ChatService
 from services.equipment_service import EquipmentService
 from services.llm_service import LLMService, LLMServiceError
-from utils.config import DIRECT_STUDY_RESOLVER_ENABLED, LLM_PROVIDER
+from utils.config import DIRECT_STUDY_RESOLVER_ENABLED
+
+DEFAULT_CHAT_PROVIDER = "gemini"
 
 
 def render_chat():
@@ -39,7 +41,7 @@ def render_chat():
     if "document_uploader_key" not in st.session_state:
         st.session_state.document_uploader_key = 0
     if "selected_llm_provider" not in st.session_state:
-        st.session_state.selected_llm_provider = LLM_PROVIDER.strip().lower()
+        st.session_state.selected_llm_provider = DEFAULT_CHAT_PROVIDER
 
     _render_sidebar(user_id, username, equipment_map, selected_equipment_id)
 
@@ -108,7 +110,7 @@ def render_chat():
             return
 
         direct_response = direct_query_result["response"]
-        selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+        selected_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
         with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
             st.write(direct_response)
 
@@ -159,7 +161,7 @@ def render_chat():
     if direct_query_result.get("rewritten_query"):
         llm_prompt = direct_query_result["rewritten_query"]
 
-    selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+    selected_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
 
     with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
         with st.spinner("Pensando..."):
@@ -357,7 +359,7 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
 
 def _render_llm_provider_switch() -> None:
     """Permite alternar entre IA local e API Gemini pela interface."""
-    current_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+    current_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
     use_local_llm = st.toggle(
         "Usar IA local",
         value=current_provider == "ollama",
@@ -374,7 +376,11 @@ def _get_message_avatar(message: dict) -> str:
     if role == "user":
         return "👤"
 
-    provider = (message.get("provider") or st.session_state.get("selected_llm_provider") or LLM_PROVIDER).strip().lower()
+    provider = (
+        message.get("provider")
+        or st.session_state.get("selected_llm_provider")
+        or DEFAULT_CHAT_PROVIDER
+    ).strip().lower()
     return _get_assistant_avatar(provider)
 
 
