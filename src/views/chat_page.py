@@ -9,13 +9,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.chat_service import ChatService
 from services.equipment_service import EquipmentService
 from services.llm_service import LLMService, LLMServiceError
-from utils.config import LLM_PROVIDER
+from utils.config import DIRECT_STUDY_RESOLVER_ENABLED, LLM_PROVIDER
 
 
 def render_chat():
-    """Renderiza a tela de conversas tecnicas."""
+    """Renderiza a tela de estudos sobre provas."""
     if "user_id" not in st.session_state:
-        st.error("Voce precisa estar logado para acessar as conversas.")
+        st.error("Voce precisa estar logado para acessar os estudos.")
         st.switch_page("pages/home_page.py")
         return
 
@@ -25,8 +25,8 @@ def render_chat():
     equipments_result = EquipmentService.get_user_equipments(user_id)
     equipments = equipments_result["equipments"]
     if not equipments:
-        st.warning("Nenhum equipamento cadastrado ainda.")
-        if st.button("Cadastrar equipamento", type="primary", use_container_width=True):
+        st.warning("Nenhuma prova cadastrada ainda.")
+        if st.button("Cadastrar prova", type="primary", use_container_width=True):
             st.switch_page("pages/equipment_page.py")
         return
 
@@ -43,25 +43,24 @@ def render_chat():
 
     _render_sidebar(user_id, username, equipment_map, selected_equipment_id)
 
-    equipment_context_result = EquipmentService.get_equipment_context(selected_equipment_id, user_id)
-    if not equipment_context_result["success"]:
-        st.error(equipment_context_result["message"])
-        return
-
     current_title = st.session_state.get("current_conversation_title", ChatService.DEFAULT_TITLE)
 
     st.subheader(selected_equipment["name"])
-    st.caption(f"Conversa atual: {current_title}")
+    st.caption(f"Estudo atual: {current_title}")
+    _inject_document_uploader_styles()
 
-    uploaded_document = st.file_uploader(
-        "Anexe um documento extra para complementar a analise",
-        type=["pdf", "doc", "docx"],
-        key=f"document_uploader_{st.session_state.document_uploader_key}",
-        help="Use esse campo para um arquivo adicional, sem alterar os documentos fixos do equipamento.",
-    )
+    with st.container(key="chat-document-uploader"):
+        uploaded_document = st.file_uploader(
+            "Anexe um material complementar para a analise",
+            type=["pdf", "doc", "docx"],
+            key=f"document_uploader_{st.session_state.document_uploader_key}",
+            help="Use esse campo para um arquivo adicional, sem alterar os arquivos fixos da prova.",
+            label_visibility="collapsed",
+        )
+        st.caption("Anexe um material complementar para a analise.")
 
     if uploaded_document is not None:
-        st.info(f"Documento pronto para consulta: {uploaded_document.name}")
+        st.info(f"Material pronto para consulta: {uploaded_document.name}")
 
     for message in st.session_state.get("messages", []):
         with st.chat_message(
@@ -70,7 +69,7 @@ def render_chat():
         ):
             st.write(message["content"])
 
-    prompt = st.chat_input("Pergunte algo sobre este equipamento...")
+    prompt = st.chat_input("Pergunte algo sobre esta prova ou peca um simulado...")
     if not prompt:
         return
 
@@ -86,12 +85,61 @@ def render_chat():
         return
 
     user_message_to_store = f"{prompt}{_get_document_note(document_payload)}"
+    llm_prompt = prompt
+
+    direct_query_result = {"handled": False}
+    if DIRECT_STUDY_RESOLVER_ENABLED:
+        direct_query_result = EquipmentService.resolve_direct_study_query(
+            selected_equipment_id,
+            user_id,
+            prompt,
+            conversation_history=st.session_state.get("messages", []),
+        )
 
     # Mostra a pergunta imediatamente antes das etapas mais pesadas.
     with st.chat_message("user", avatar=_get_message_avatar({"role": "user"})):
         st.write(prompt)
         if document_payload:
-            st.caption(f"Documento anexado: {document_payload['name']}")
+            st.caption(f"Material anexado: {document_payload['name']}")
+
+    if direct_query_result.get("handled"):
+        if not direct_query_result.get("success", False):
+            st.error(direct_query_result.get("message", "Nao foi possivel consultar a prova."))
+            return
+
+        direct_response = direct_query_result["response"]
+        selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
+        with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
+            st.write(direct_response)
+
+        save_result = ChatService.send_message(
+            st.session_state.conversation_id,
+            user_id,
+            user_message_to_store,
+            direct_response,
+        )
+        if not save_result["success"]:
+            st.error(save_result["message"])
+            return
+
+        st.session_state.messages.append({"role": "user", "content": user_message_to_store})
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": direct_response,
+                "provider": selected_provider,
+            }
+        )
+        if save_result.get("title"):
+            st.session_state.current_conversation_title = save_result["title"]
+        if document_payload:
+            st.session_state.document_uploader_key += 1
+        st.rerun()
+
+    equipment_context_result = EquipmentService.get_equipment_context(selected_equipment_id, user_id)
+    if not equipment_context_result["success"]:
+        st.error(equipment_context_result["message"])
+        return
 
     knowledge_result = EquipmentService.search_equipment_knowledge(
         selected_equipment_id,
@@ -102,21 +150,44 @@ def render_chat():
         st.error(knowledge_result["message"])
         return
 
+    resolved_context_text = direct_query_result.get("resolved_context_text", "")
+    if resolved_context_text:
+        equipment_context_result["context_text"] = (
+            f"{equipment_context_result['context_text']}\n\n"
+            f"Contexto objetivo recuperado para esta pergunta:\n{resolved_context_text}"
+        )
+    if direct_query_result.get("rewritten_query"):
+        llm_prompt = direct_query_result["rewritten_query"]
+
     selected_provider = st.session_state.get("selected_llm_provider", LLM_PROVIDER).strip().lower()
 
     with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
         with st.spinner("Pensando..."):
             try:
                 llm_service = LLMService(selected_provider)
-                response = llm_service.get_response(
-                    prompt,
-                    st.session_state.messages,
-                    document=document_payload,
-                    equipment_context=equipment_context_result["context_text"],
-                    knowledge_chunks=knowledge_result["chunks"],
-                    had_direct_matches=knowledge_result.get("had_direct_matches", False),
-                )
-                st.write(response)
+                if selected_provider == "ollama":
+                    response_placeholder = st.empty()
+                    response = ""
+                    for chunk in llm_service.stream_response(
+                        llm_prompt,
+                        st.session_state.messages,
+                        document=document_payload,
+                        equipment_context=equipment_context_result["context_text"],
+                        knowledge_chunks=knowledge_result["chunks"],
+                        had_direct_matches=knowledge_result.get("had_direct_matches", False),
+                    ):
+                        response += chunk
+                        response_placeholder.markdown(response)
+                else:
+                    response = llm_service.get_response(
+                        llm_prompt,
+                        st.session_state.messages,
+                        document=document_payload,
+                        equipment_context=equipment_context_result["context_text"],
+                        knowledge_chunks=knowledge_result["chunks"],
+                        had_direct_matches=knowledge_result.get("had_direct_matches", False),
+                    )
+                    st.write(response)
 
                 save_result = ChatService.send_message(
                     st.session_state.conversation_id,
@@ -227,15 +298,29 @@ def _inject_history_styles() -> None:
     )
 
 
+def _inject_document_uploader_styles() -> None:
+    """Oculta a legenda padrao do uploader para usar um texto personalizado."""
+    st.markdown(
+        """
+        <style>
+        .st-key-chat-document-uploader [data-testid="stFileUploaderDropzoneInstructions"] small {
+            display: none;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict], selected_equipment_id: int) -> None:
-    """Renderiza a barra lateral da tela de conversas."""
+    """Renderiza a barra lateral da tela de estudos."""
     with st.sidebar:
         st.markdown(f'### Ola "{username}"')
         _render_llm_provider_switch()
 
         equipment_ids = list(equipment_map.keys())
         selected_option = st.selectbox(
-            "Equipamento ativo",
+            "Prova ativa",
             options=equipment_ids,
             index=equipment_ids.index(selected_equipment_id),
             format_func=lambda equipment_id: equipment_map[equipment_id]["name"],
@@ -246,7 +331,7 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
             _reset_chat_state()
             st.rerun()
 
-        if st.button("Nova conversa", use_container_width=True):
+        if st.button("Novo estudo", use_container_width=True):
             _start_new_conversation(user_id, selected_equipment_id)
             st.rerun()
 
@@ -257,7 +342,7 @@ def _render_sidebar(user_id: int, username: str, equipment_map: dict[int, dict],
         conversations = conversations_result["conversations"]
 
         if not conversations:
-            st.caption("Nenhuma conversa criada ainda para este equipamento.")
+            st.caption("Nenhum estudo criado ainda para esta prova.")
 
         with st.container(key="history-list"):
             for conversation in conversations:
@@ -327,7 +412,7 @@ def _render_conversation_item(conversation: dict, user_id: int, equipment_id: in
             st.rerun()
 
         with action_col.popover(" ", use_container_width=True):
-            st.caption("Acoes da conversa")
+            st.caption("Acoes do estudo")
             st.text_input(
                 "Novo titulo",
                 key=f"title_input_{conversation_id}",
@@ -348,20 +433,20 @@ def _render_conversation_item(conversation: dict, user_id: int, equipment_id: in
 
             st.divider()
 
-            if st.button("Excluir conversa", key=f"delete_{conversation_id}", use_container_width=True):
+            if st.button("Excluir estudo", key=f"delete_{conversation_id}", use_container_width=True):
                 delete_result = ChatService.delete_conversation(conversation_id, user_id)
                 if delete_result["success"]:
                     if conversation_id == st.session_state.get("conversation_id"):
                         _reset_chat_state()
                         _load_latest_or_new_conversation(user_id, equipment_id)
-                    st.success("Conversa excluida.")
+                    st.success("Estudo excluido.")
                     st.rerun()
 
                 st.error(delete_result["message"])
 
 
 def _ensure_selected_equipment(equipment_map: dict[int, dict]) -> int:
-    """Garante que sempre exista um equipamento selecionado."""
+    """Garante que sempre exista uma prova selecionada."""
     selected_equipment_id = st.session_state.get("selected_equipment_id")
     if selected_equipment_id not in equipment_map:
         selected_equipment_id = next(iter(equipment_map))
@@ -370,7 +455,7 @@ def _ensure_selected_equipment(equipment_map: dict[int, dict]) -> int:
 
 
 def _ensure_active_conversation(user_id: int, equipment_id: int) -> None:
-    """Sincroniza a conversa ativa com o equipamento selecionado."""
+    """Sincroniza a conversa ativa com a prova selecionada."""
     conversation_id = st.session_state.get("conversation_id")
     if not conversation_id:
         _load_latest_or_new_conversation(user_id, equipment_id)
@@ -409,7 +494,7 @@ def _load_conversation(conversation_id: int, user_id: int) -> None:
 
 
 def _start_new_conversation(user_id: int, equipment_id: int) -> None:
-    """Cria uma nova conversa para o equipamento ativo."""
+    """Cria uma nova conversa para a prova ativa."""
     result = ChatService.start_conversation(user_id, equipment_id)
     st.session_state.conversation_id = result["conversation_id"]
     st.session_state.messages = []
@@ -418,7 +503,7 @@ def _start_new_conversation(user_id: int, equipment_id: int) -> None:
 
 
 def _load_latest_or_new_conversation(user_id: int, equipment_id: int) -> None:
-    """Carrega a conversa mais recente do equipamento ou cria uma nova."""
+    """Carrega a conversa mais recente da prova ou cria uma nova."""
     conversations = ChatService.get_user_conversations(user_id, equipment_id)["conversations"]
     if conversations:
         _load_conversation(conversations[0]["id"], user_id)
@@ -448,10 +533,10 @@ def _build_document_payload(uploaded_document):
 
 
 def _get_document_note(document_payload: dict | None) -> str:
-    """Gera a anotacao de documento complementar no texto salvo."""
+    """Gera a anotacao de material complementar no texto salvo."""
     if not document_payload:
         return ""
-    return f"\n\nDocumento anexado: {document_payload['name']}"
+    return f"\n\nMaterial anexado: {document_payload['name']}"
 
 
 def _reset_chat_state() -> None:

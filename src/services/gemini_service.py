@@ -36,7 +36,7 @@ class GeminiService:
         knowledge_chunks: list[dict] | None = None,
         had_direct_matches: bool = False,
     ) -> str:
-        """Obtem resposta do Gemini usando historico e contexto tecnico opcional."""
+        """Obtem resposta do Gemini usando historico e contexto de estudo opcional."""
         try:
             has_grounding = bool(document or equipment_context or knowledge_chunks)
             if has_grounding:
@@ -67,7 +67,7 @@ class GeminiService:
         knowledge_chunks: list[dict],
         had_direct_matches: bool,
     ) -> str:
-        """Responde com base em equipamento, trechos indexados e documento extra opcional."""
+        """Responde com base em prova, gabarito, trechos indexados e material extra opcional."""
         uploaded_files = []
         text_documents = []
 
@@ -80,7 +80,7 @@ class GeminiService:
                 if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                     extracted_text = self._extract_docx_text(file_bytes)
                     if extracted_text.strip():
-                        text_documents.append(f"Documento complementar {file_name}:\n{extracted_text[:120000]}")
+                        text_documents.append(f"Material complementar {file_name}:\n{extracted_text[:120000]}")
                 elif mime_type in {"application/pdf", "application/msword"}:
                     uploaded_file = self._upload_document(file_name, file_bytes, mime_type)
                     uploaded_files.append(uploaded_file)
@@ -143,56 +143,77 @@ class GeminiService:
         has_file_documents: bool,
         had_direct_matches: bool,
     ) -> str:
-        """Monta prompt tecnico com base em equipamento, trechos e documentos."""
+        """Monta prompt de estudos com base em prova, gabarito, trechos e documentos."""
         history_text = self._build_history_text(conversation_history)
         history_section = f"Historico recente:\n{history_text}\n\n" if history_text else ""
-        equipment_section = f"Dados do equipamento:\n{equipment_context}\n\n" if equipment_context else ""
+        equipment_section = f"Contexto da prova:\n{equipment_context}\n\n" if equipment_context else ""
 
-        chunk_lines = []
+        exam_chunk_lines = []
+        answer_key_chunk_lines = []
+        supporting_chunk_lines = []
         for index, chunk in enumerate(knowledge_chunks, start=1):
-            source_label = chunk.get("source_label") or "Trecho tecnico"
-            file_name = chunk.get("file_name") or "Documento"
+            source_label = chunk.get("source_label") or "Trecho relevante"
+            file_name = chunk.get("file_name") or "Arquivo"
             chunk_text = (chunk.get("chunk_text") or "").strip()
-            if chunk_text:
-                chunk_lines.append(
-                    f"[Trecho {index}] {file_name} | {source_label}\n{chunk_text}"
-                )
+            if not chunk_text:
+                continue
+            line = f"[Trecho {index}] {file_name} | {source_label}\n{chunk_text}"
+            document_role = chunk.get("document_role")
+            if document_role == "exam":
+                exam_chunk_lines.append(line)
+            elif document_role == "answer_key":
+                answer_key_chunk_lines.append(line)
+            else:
+                supporting_chunk_lines.append(line)
 
         chunks_section = ""
-        if chunk_lines:
-            chunks_section = "Trechos mais relevantes dos manuais:\n" + "\n\n".join(chunk_lines) + "\n\n"
+        if exam_chunk_lines:
+            chunks_section += "Conteudo da prova:\n" + "\n\n".join(exam_chunk_lines) + "\n\n"
+        if answer_key_chunk_lines:
+            chunks_section += "Conteudo do gabarito:\n" + "\n\n".join(answer_key_chunk_lines) + "\n\n"
+        if supporting_chunk_lines:
+            chunks_section += "Conteudo de materiais complementares:\n" + "\n\n".join(supporting_chunk_lines) + "\n\n"
 
         documents_section = ""
         if text_documents:
-            documents_section = "Conteudo textual de documento complementar:\n" + "\n\n".join(text_documents) + "\n\n"
+            documents_section = "Conteudo textual de material complementar:\n" + "\n\n".join(text_documents) + "\n\n"
 
         file_docs_section = ""
         if has_file_documents:
-            file_docs_section = "Um arquivo complementar foi anexado a esta consulta. Considere-o na resposta.\n\n"
+            file_docs_section = "Um material complementar foi anexado a esta consulta. Considere-o na resposta.\n\n"
 
         retrieval_section = (
             "Foram encontrados trechos diretamente relevantes para esta pergunta.\n\n"
             if had_direct_matches
             else (
                 "Nao foram encontrados trechos diretamente relevantes para esta pergunta.\n"
-                "Nesse caso, use apenas o resumo de indexacao e os dados gerais do equipamento.\n"
-                "Nao afirme que o manual termina nas primeiras paginas so porque poucos trechos foram mostrados.\n\n"
+                "Nesse caso, use apenas o resumo de indexacao e os dados gerais da prova.\n"
+                "Nao afirme respostas especificas sem apoio no material disponibilizado.\n\n"
             )
         )
 
         return (
-            "Voce e um assistente tecnico especializado em equipamentos e manuais industriais.\n"
-            "Responda com base apenas nas informacoes do equipamento, no historico, nos trechos indexados e nos documentos fornecidos.\n"
+            "Voce e um assistente de estudos para concursos, especializado em analisar provas, gabaritos e materiais de apoio.\n"
+            "Responda com base apenas nas informacoes da prova, no historico, nos trechos indexados e nos documentos fornecidos.\n"
+            "Analise com cuidado antes de responder: primeiro localize os sinais mais relevantes no material, depois confira se a conclusao esta sustentada por eles.\n"
+            "Prefira uma resposta um pouco mais pensada e conservadora do que uma resposta rapida e arriscada.\n"
+            "Nunca invente ou reconstrua o texto exato de uma questao, alternativa ou enunciado.\n"
+            "Se o usuario pedir o texto exato de uma questao, copie somente o que estiver no conteudo da prova.\n"
+            "Quando reproduzir uma questao de multipla escolha, formate assim: enunciado em um paragrafo separado e cada alternativa em uma linha propria.\n"
+            "Nao use o gabarito para deduzir ou reinventar o enunciado da questao.\n"
+            "Se o texto exato nao estiver visivel no material, diga claramente que nao foi possivel localizar esse trecho.\n"
             "Se a resposta nao estiver clara nos dados, diga isso objetivamente.\n"
-            "Quando possivel, explique de forma pratica para um manutentor eletromecanico.\n"
-            "Se usar os manuais como base, mencione o trecho ou a pagina de forma natural.\n\n"
+            "Quando estiver inferindo, use marcacoes claras como 'Pelo material, a leitura mais provavel e...' ou 'Isso nao esta explicito, mas a interpretacao mais segura e...'.\n"
+            "Quando houver base suficiente, explique o raciocinio da resposta correta e, se fizer sentido, por que as demais alternativas estao erradas.\n"
+            "Se pedirem um simulado, monte questoes novas inspiradas no estilo e nos assuntos do material, deixando claro quando forem elaboradas por voce.\n"
+            "Se usar a prova ou o gabarito como base, mencione o trecho ou a pagina de forma natural.\n\n"
             f"{history_section}"
             f"{equipment_section}"
             f"{retrieval_section}"
             f"{chunks_section}"
             f"{documents_section}"
             f"{file_docs_section}"
-            f"Pergunta do manutentor: {user_message}"
+            f"Pergunta do estudante: {user_message}"
         )
 
     def _build_history_text(self, messages: list) -> str:

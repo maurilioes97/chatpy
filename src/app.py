@@ -13,9 +13,9 @@ init_db()
 st.set_page_config(**STREAMLIT_CONFIG)
 
 pages = [
-    st.Page("pages/home_page.py", title="Página inicial", icon="🏠", default=True),
-    st.Page("pages/equipment_page.py", title="Equipamentos", icon="🛠️"),
-    st.Page("pages/chat_page.py", title="Conversas", icon="💬"),
+    st.Page("pages/home_page.py", title="Pagina inicial", icon="🏠", default=True),
+    st.Page("pages/equipment_page.py", title="Provas", icon="📝"),
+    st.Page("pages/chat_page.py", title="Estudos", icon="💬"),
 ]
 
 navigation = st.navigation(pages, position="sidebar")

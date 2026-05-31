@@ -10,34 +10,31 @@ from services.user_service import UserService
 
 
 def render_equipment_page():
-    """Renderiza o gerenciamento de equipamentos."""
+    """Renderiza o gerenciamento de provas."""
     if "user_id" not in st.session_state:
-        st.error("Voce precisa estar logado para acessar os equipamentos.")
+        st.error("Voce precisa estar logado para acessar as provas.")
         st.switch_page("pages/home_page.py")
         return
 
     user_id = st.session_state.user_id
-    username = st.session_state.get("username", "usuario")
     user_role = _get_current_user_role(user_id)
     is_admin = user_role == "admin"
 
-    st.title("Equipamentos")
-    if is_admin:
-        st.caption(f"Cadastre as maquinas do manutentor {username} e disponibilize os manuais tecnicos para todos os usuarios.")
-    else:
-        st.caption("Consulte os equipamentos e documentos disponibilizados pelo administrador do sistema.")
+    st.title("Provas")
+    if not is_admin:
+        st.caption("Consulte provas, gabaritos e materiais disponibilizados pelo administrador do sistema.")
 
     _ensure_equipment_page_state()
 
     search_col, action_col = st.columns([4, 1.4])
     search_query = search_col.text_input(
-        "Pesquisar equipamentos",
+        "Pesquisar provas",
         key="equipment_search_query",
-        placeholder="Buscar por nome ou descricao",
+        placeholder="Buscar por nome, banca ou descricao",
         label_visibility="collapsed",
     )
     if is_admin:
-        if action_col.button("Adicionar equipamento", type="primary", use_container_width=True):
+        if action_col.button("Adicionar prova", type="primary", use_container_width=True):
             st.session_state.equipment_form_mode = "create"
             st.session_state.editing_equipment_id = None
             st.rerun()
@@ -47,12 +44,12 @@ def render_equipment_page():
     _render_equipment_form(user_id, is_admin)
 
     st.divider()
-    st.subheader("Equipamentos cadastrados")
+    st.subheader("Provas cadastradas")
     _render_equipment_list(user_id, search_query, is_admin)
 
 
 def _ensure_equipment_page_state() -> None:
-    """Inicializa o estado local da pagina de equipamentos."""
+    """Inicializa o estado local da pagina de provas."""
     if "equipment_form_mode" not in st.session_state:
         st.session_state.equipment_form_mode = None
     if "editing_equipment_id" not in st.session_state:
@@ -85,38 +82,67 @@ def _render_equipment_form(user_id: int, is_admin: bool) -> None:
         existing_documents = equipment.get("documents", [])
 
     with st.container(border=True):
-        st.write("**Editar equipamento**" if is_editing else "**Novo equipamento**")
+        st.write("**Editar prova**" if is_editing else "**Nova prova**")
         if is_editing and existing_documents:
-            document_names = ", ".join(doc["file_name"] for doc in existing_documents)
-            st.caption(f"Documentos atuais: {document_names}")
+            exam_documents = [doc["file_name"] for doc in existing_documents if doc.get("document_role") == "exam"]
+            answer_key_documents = [doc["file_name"] for doc in existing_documents if doc.get("document_role") == "answer_key"]
+            supporting_documents = [
+                doc["file_name"] for doc in existing_documents if doc.get("document_role") not in {"exam", "answer_key"}
+            ]
+            if exam_documents:
+                st.caption("Prova atual: " + ", ".join(exam_documents))
+            if answer_key_documents:
+                st.caption("Gabarito atual: " + ", ".join(answer_key_documents))
+            if supporting_documents:
+                st.caption("Materiais complementares: " + ", ".join(supporting_documents))
         elif is_editing:
-            st.caption("Este equipamento ainda nao possui documentos vinculados.")
+            st.caption("Esta prova ainda nao possui arquivos vinculados.")
 
         with st.form("equipment_edit_form" if is_editing else "equipment_create_form", clear_on_submit=not is_editing):
             name = st.text_input(
-                "Nome da maquina ou equipamento",
+                "Nome da prova",
                 value=equipment["name"] if equipment else "",
             )
             description = st.text_area(
-                "Descricao tecnica",
+                "Descricao e observacoes de estudo",
                 value=equipment["description"] if equipment else "",
                 height=140,
-                placeholder="Informe modelo, funcao, setor, caracteristicas e observacoes importantes.",
+                placeholder="Informe banca, ano, disciplina, nivel de dificuldade e observacoes importantes.",
             )
-            uploaded_files = st.file_uploader(
-                "Manuais e documentos tecnicos" if not is_editing else "Adicionar mais documentos tecnicos",
+            exam_file = st.file_uploader(
+                "Arquivo da prova" if not is_editing else "Adicionar nova versao da prova",
+                type=["pdf", "doc", "docx"],
+                accept_multiple_files=False,
+                help=(
+                    "Envie o arquivo principal da prova."
+                    if not is_editing
+                    else "Envie uma nova prova para complementar o cadastro atual."
+                ),
+            )
+            answer_key_file = st.file_uploader(
+                "Arquivo do gabarito" if not is_editing else "Adicionar nova versao do gabarito",
+                type=["pdf", "doc", "docx"],
+                accept_multiple_files=False,
+                help=(
+                    "Envie o gabarito correspondente a prova."
+                    if not is_editing
+                    else "Envie um novo gabarito para complementar o cadastro atual."
+                ),
+            )
+            supporting_files = st.file_uploader(
+                "Materiais complementares (opcional)",
                 type=["pdf", "doc", "docx"],
                 accept_multiple_files=True,
                 help=(
-                    "Adicione pelo menos um manual ou documento de apoio do equipamento."
+                    "Adicione materiais extras, como resolucoes comentadas, editais ou resumos."
                     if not is_editing
-                    else "Envie novos arquivos para anexar ao equipamento sem remover os documentos atuais."
+                    else "Envie novos arquivos para anexar a prova sem remover os arquivos atuais."
                 ),
             )
 
             save_col, cancel_col = st.columns(2)
             submitted = save_col.form_submit_button(
-                "Salvar alteracoes" if is_editing else "Cadastrar equipamento",
+                "Salvar alteracoes" if is_editing else "Cadastrar prova",
                 type="primary",
                 use_container_width=True,
             )
@@ -129,7 +155,7 @@ def _render_equipment_form(user_id: int, is_admin: bool) -> None:
         if not submitted:
             return
 
-        should_show_progress = bool(uploaded_files)
+        should_show_progress = bool(exam_file or answer_key_file or supporting_files)
         progress_placeholder = st.empty() if should_show_progress else None
         status_placeholder = st.empty() if should_show_progress else None
         progress_bar = (
@@ -152,11 +178,13 @@ def _render_equipment_form(user_id: int, is_admin: bool) -> None:
                 name,
                 description,
             )
-            if result["success"] and uploaded_files:
+            if result["success"] and (exam_file or answer_key_file or supporting_files):
                 documents_result = EquipmentService.add_equipment_documents(
                     user_id,
                     editing_equipment_id,
-                    uploaded_files,
+                    exam_file=exam_file,
+                    answer_key_file=answer_key_file,
+                    supporting_files=supporting_files,
                     progress_callback=progress_callback,
                 )
                 if not documents_result["success"]:
@@ -172,7 +200,9 @@ def _render_equipment_form(user_id: int, is_admin: bool) -> None:
                 user_id,
                 name,
                 description,
-                uploaded_files,
+                exam_file=exam_file,
+                answer_key_file=answer_key_file,
+                supporting_files=supporting_files,
                 progress_callback=progress_callback,
             )
 
@@ -195,7 +225,7 @@ def _render_equipment_form(user_id: int, is_admin: bool) -> None:
 
 
 def _inject_equipment_table_styles() -> None:
-    """Aplica um visual de tabela para a lista de equipamentos."""
+    """Aplica um visual de tabela para a lista de provas."""
     st.markdown(
         """
         <style>
@@ -305,7 +335,7 @@ def _inject_equipment_table_styles() -> None:
 
             .st-key-equipment-table [class*="st-key-equipment-row-"] [data-testid="column"]:nth-child(1),
             .st-key-equipment-table [class*="st-key-equipment-row-"] [data-testid="column"]:nth-child(2),
-            .st-key-equipment-table [class*="st-key-equipment-row-"] [data-testid="column"]:nth-child(5) {
+            .st-key-equipment-table [class*="st-key-equipment-row-"] [data-testid="column"]:nth-child(6) {
                 flex-basis: 100% !important;
                 width: 100% !important;
             }
@@ -321,16 +351,16 @@ def _inject_equipment_table_styles() -> None:
 
 
 def _render_equipment_list(user_id: int, search_query: str = "", is_admin: bool = False) -> None:
-    """Lista os equipamentos do usuario em formato de tabela."""
+    """Lista as provas do usuario em formato de tabela."""
     equipments_result = EquipmentService.get_user_equipments(user_id)
     equipments = _filter_equipments(equipments_result["equipments"], search_query)
 
     if not equipments and search_query.strip():
-        st.info("Nenhum equipamento encontrado para essa pesquisa.")
+        st.info("Nenhuma prova encontrada para essa pesquisa.")
         return
 
     if not equipments:
-        st.info("Nenhum equipamento cadastrado ainda. Use o botao de adicionar para criar o primeiro.")
+        st.info("Nenhuma prova cadastrada ainda. Use o botao de adicionar para criar a primeira.")
         return
 
     _inject_equipment_table_styles()
@@ -338,34 +368,42 @@ def _render_equipment_list(user_id: int, search_query: str = "", is_admin: bool 
     with st.container(key="equipment-table"):
         with st.container(key="equipment-header"):
             if is_admin:
-                name_col, description_col, docs_col, chunks_col, actions_col = st.columns([1.8, 3.0, 0.9, 0.9, 2.3])
+                name_col, description_col, exam_col, answer_key_col, chunks_col, actions_col = st.columns([1.7, 2.9, 1.0, 1.0, 0.8, 2.3])
             else:
-                name_col, description_col, docs_col, chunks_col, actions_col = st.columns([2.0, 3.8, 0.9, 0.9, 1.8])
+                name_col, description_col, exam_col, answer_key_col, chunks_col, actions_col = st.columns([1.9, 3.2, 1.0, 1.0, 0.8, 1.8])
             name_col.markdown(_build_table_heading("Nome"), unsafe_allow_html=True)
             description_col.markdown(_build_table_heading("Descricao"), unsafe_allow_html=True)
-            docs_col.markdown(_build_table_heading("Docs"), unsafe_allow_html=True)
+            exam_col.markdown(_build_table_heading("Prova"), unsafe_allow_html=True)
+            answer_key_col.markdown(_build_table_heading("Gabarito"), unsafe_allow_html=True)
             chunks_col.markdown(_build_table_heading("Trechos"), unsafe_allow_html=True)
             actions_col.markdown(_build_table_heading("Acoes"), unsafe_allow_html=True)
 
         for row_index, equipment in enumerate(equipments):
             with st.container(key=f"equipment-row-{row_index}"):
                 if is_admin:
-                    name_col, description_col, docs_col, chunks_col, actions_col = st.columns([1.8, 3.0, 0.9, 0.9, 2.3])
+                    name_col, description_col, exam_col, answer_key_col, chunks_col, actions_col = st.columns([1.7, 2.9, 1.0, 1.0, 0.8, 2.3])
                 else:
-                    name_col, description_col, docs_col, chunks_col, actions_col = st.columns([2.0, 3.8, 0.9, 0.9, 1.8])
+                    name_col, description_col, exam_col, answer_key_col, chunks_col, actions_col = st.columns([1.9, 3.2, 1.0, 1.0, 0.8, 1.8])
                 name_col.markdown(_build_table_cell("Nome", equipment["name"]), unsafe_allow_html=True)
                 description_col.markdown(
                     _build_table_cell("Descricao", _truncate_text(equipment["description"], 110), muted=True),
                     unsafe_allow_html=True,
                 )
-                docs_col.markdown(_build_table_cell("Docs", str(equipment["document_count"])), unsafe_allow_html=True)
+                exam_col.markdown(
+                    _build_table_cell("Prova", str(equipment.get("exam_document_count", 0))),
+                    unsafe_allow_html=True,
+                )
+                answer_key_col.markdown(
+                    _build_table_cell("Gabarito", str(equipment.get("answer_key_document_count", 0))),
+                    unsafe_allow_html=True,
+                )
                 chunks_col.markdown(_build_table_cell("Trechos", str(equipment.get("chunk_count", 0))), unsafe_allow_html=True)
 
                 if is_admin:
                     with actions_col.container(key=f"equipment-actions-{row_index}"):
                         open_col, edit_col, delete_col = st.columns(3)
 
-                    if open_col.button("Abrir conversa", key=f"open_equipment_chat_{equipment['id']}", use_container_width=True):
+                    if open_col.button("Abrir estudo", key=f"open_equipment_chat_{equipment['id']}", use_container_width=True):
                         st.session_state.selected_equipment_id = equipment["id"]
                         _reset_chat_state()
                         st.switch_page("pages/chat_page.py")
@@ -383,13 +421,13 @@ def _render_equipment_list(user_id: int, search_query: str = "", is_admin: bool 
                             if st.session_state.get("editing_equipment_id") == equipment["id"]:
                                 _clear_equipment_form_state()
                             _reset_chat_state()
-                            st.success("Equipamento excluido com sucesso.")
+                            st.success("Prova excluida com sucesso.")
                             st.rerun()
 
                         st.error(result["message"])
                 else:
                     if actions_col.button(
-                        "Abrir conversa",
+                        "Abrir estudo",
                         key=f"open_equipment_chat_{equipment['id']}",
                         use_container_width=True,
                     ):
@@ -407,7 +445,7 @@ def _truncate_text(text: str, limit: int) -> str:
 
 
 def _filter_equipments(equipments: list[dict], search_query: str) -> list[dict]:
-    """Filtra equipamentos por nome ou descricao."""
+    """Filtra provas por nome ou descricao."""
     normalized_query = (search_query or "").strip().lower()
     if not normalized_query:
         return equipments
@@ -461,7 +499,7 @@ def _get_current_user_role(user_id: int) -> str:
 
 
 def _reset_chat_state() -> None:
-    """Limpa a conversa ativa ao trocar de equipamento."""
+    """Limpa a conversa ativa ao trocar de prova."""
     st.session_state.pop("conversation_id", None)
     st.session_state.pop("messages", None)
     st.session_state.pop("current_conversation_title", None)

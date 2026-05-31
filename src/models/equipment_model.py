@@ -39,6 +39,8 @@ class EquipmentModel:
             SELECT
                 equipments.*,
                 COUNT(DISTINCT equipment_documents.id) AS document_count,
+                COUNT(DISTINCT CASE WHEN equipment_documents.document_role = 'exam' THEN equipment_documents.id END) AS exam_document_count,
+                COUNT(DISTINCT CASE WHEN equipment_documents.document_role = 'answer_key' THEN equipment_documents.id END) AS answer_key_document_count,
                 COUNT(DISTINCT equipment_document_chunks.id) AS chunk_count
             FROM equipments
             LEFT JOIN equipment_documents
@@ -63,6 +65,8 @@ class EquipmentModel:
             SELECT
                 equipments.*,
                 COUNT(DISTINCT equipment_documents.id) AS document_count,
+                COUNT(DISTINCT CASE WHEN equipment_documents.document_role = 'exam' THEN equipment_documents.id END) AS exam_document_count,
+                COUNT(DISTINCT CASE WHEN equipment_documents.document_role = 'answer_key' THEN equipment_documents.id END) AS answer_key_document_count,
                 COUNT(DISTINCT equipment_document_chunks.id) AS chunk_count
             FROM equipments
             LEFT JOIN equipment_documents
@@ -98,16 +102,22 @@ class EquipmentModel:
         return success
 
     @staticmethod
-    def add_document(equipment_id: int, file_name: str, file_path: str, file_type: str) -> int:
+    def add_document(
+        equipment_id: int,
+        file_name: str,
+        file_path: str,
+        file_type: str,
+        document_role: str = "supporting",
+    ) -> int:
         """Adiciona documento a um equipamento."""
         conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO equipment_documents (equipment_id, file_name, file_path, file_type)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO equipment_documents (equipment_id, file_name, file_path, file_type, document_role)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (equipment_id, file_name, file_path, file_type),
+            (equipment_id, file_name, file_path, file_type, document_role),
         )
         conn.commit()
         document_id = cursor.lastrowid
@@ -129,7 +139,13 @@ class EquipmentModel:
                 ON equipment_document_chunks.document_id = equipment_documents.id
             WHERE equipment_documents.equipment_id = ?
             GROUP BY equipment_documents.id
-            ORDER BY equipment_documents.id ASC
+            ORDER BY
+                CASE equipment_documents.document_role
+                    WHEN 'exam' THEN 0
+                    WHEN 'answer_key' THEN 1
+                    ELSE 2
+                END ASC,
+                equipment_documents.id ASC
             """,
             (equipment_id,),
         )
@@ -194,36 +210,27 @@ class EquipmentModel:
             """
             SELECT
                 equipment_document_chunks.*,
-                equipment_documents.file_name
+                equipment_documents.file_name,
+                equipment_documents.document_role
             FROM equipment_document_chunks
             INNER JOIN equipment_documents
                 ON equipment_documents.id = equipment_document_chunks.document_id
             WHERE equipment_document_chunks.equipment_id = ?
-            ORDER BY equipment_document_chunks.chunk_index ASC, equipment_document_chunks.id ASC
+            ORDER BY
+                CASE equipment_documents.document_role
+                    WHEN 'exam' THEN 0
+                    WHEN 'answer_key' THEN 1
+                    ELSE 2
+                END ASC,
+                equipment_document_chunks.document_id ASC,
+                equipment_document_chunks.chunk_index ASC,
+                equipment_document_chunks.id ASC
             """,
             (equipment_id,),
         )
         chunks = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return chunks
-
-    @staticmethod
-    def update_chunk_embedding(chunk_id: int, embedding_vector: str, embedding_model: str) -> bool:
-        """Salva o embedding de um trecho."""
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE equipment_document_chunks
-            SET embedding_vector = ?, embedding_model = ?
-            WHERE id = ?
-            """,
-            (embedding_vector, embedding_model, chunk_id),
-        )
-        conn.commit()
-        success = cursor.rowcount > 0
-        conn.close()
-        return success
 
     @staticmethod
     def delete_document_chunks(document_id: int) -> int:

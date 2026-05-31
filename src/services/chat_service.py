@@ -10,7 +10,7 @@ from models.chat_model import ChatModel
 class ChatService:
     """Servico de logica de chat."""
 
-    DEFAULT_TITLE = "Nova Conversa"
+    DEFAULT_TITLE = "Novo Estudo"
 
     @staticmethod
     def start_conversation(user_id: int, equipment_id: int | None, title: str | None = None) -> dict:
@@ -116,7 +116,9 @@ class ChatService:
     @staticmethod
     def _build_title_from_message(user_message: str) -> str:
         """Gera um titulo simples com base na primeira mensagem."""
-        base_message = user_message.split("Documento anexado:", 1)[0]
+        base_message = user_message
+        for marker in ("Material anexado:", "Documento anexado:"):
+            base_message = base_message.split(marker, 1)[0]
         cleaned = re.sub(r"\s+", " ", base_message).strip(" .,:;!?-\n\t")
         if not cleaned:
             return ChatService.DEFAULT_TITLE

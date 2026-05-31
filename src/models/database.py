@@ -82,11 +82,16 @@ def init_db():
             file_name TEXT NOT NULL,
             file_path TEXT NOT NULL,
             file_type TEXT NOT NULL,
+            document_role TEXT NOT NULL DEFAULT 'supporting',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (equipment_id) REFERENCES equipments(id)
         )
         """
     )
+    cursor.execute("PRAGMA table_info(equipment_documents)")
+    document_columns = {row["name"] for row in cursor.fetchall()}
+    if "document_role" not in document_columns:
+        cursor.execute("ALTER TABLE equipment_documents ADD COLUMN document_role TEXT NOT NULL DEFAULT 'supporting'")
 
     cursor.execute(
         """
@@ -98,8 +103,6 @@ def init_db():
             chunk_text TEXT NOT NULL,
             source_label TEXT NOT NULL DEFAULT '',
             extraction_method TEXT NOT NULL DEFAULT 'text',
-            embedding_vector TEXT,
-            embedding_model TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (document_id) REFERENCES equipment_documents(id),
             FOREIGN KEY (equipment_id) REFERENCES equipments(id)
@@ -110,10 +113,6 @@ def init_db():
     chunk_columns = {row["name"] for row in cursor.fetchall()}
     if "extraction_method" not in chunk_columns:
         cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'text'")
-    if "embedding_vector" not in chunk_columns:
-        cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN embedding_vector TEXT")
-    if "embedding_model" not in chunk_columns:
-        cursor.execute("ALTER TABLE equipment_document_chunks ADD COLUMN embedding_model TEXT")
 
     cursor.execute(
         """

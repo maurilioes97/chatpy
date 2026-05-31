@@ -6,10 +6,11 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from services.user_service import UserService
+
+
 def render_home():
     """Renderiza a pagina inicial."""
-    st.title("ChatPy - Assistente inteligente para manuais técnicos")
-    st.caption("Um assistente tecnico para manutentores consultarem manuais e caracteristicas de equipamentos.")
+    st.title("ChatPy - Assistente inteligente para estudos de concursos")
 
     st.divider()
 
@@ -27,16 +28,16 @@ def _render_logged_home():
     st.subheader("Sessao ativa")
     st.write(f"Voce esta logado como **{username}**.")
     if user_role == "admin":
-        st.info("Voce pode cadastrar equipamentos e disponibiliza-los para todos os usuarios do sistema.")
+        st.info("Voce pode cadastrar provas, gabaritos e materiais de estudo para todos os usuarios do sistema.")
     else:
-        st.info("Os equipamentos cadastrados pelo administrador estao disponiveis para consulta e conversa tecnica.")
+        st.info("As provas cadastradas pelo administrador estao disponiveis para estudo, consulta e simulados guiados pela IA.")
 
-    equipment_col, chat_col, logout_col = st.columns(3)
+    proofs_col, study_col, logout_col = st.columns(3)
 
-    if equipment_col.button("Abrir equipamentos", type="primary", use_container_width=True):
+    if proofs_col.button("Abrir provas", type="primary", use_container_width=True):
         st.switch_page("pages/equipment_page.py")
 
-    if chat_col.button("Abrir conversas", use_container_width=True):
+    if study_col.button("Abrir estudos", use_container_width=True):
         st.switch_page("pages/chat_page.py")
 
     if logout_col.button("Sair da conta", use_container_width=True):
@@ -44,7 +45,7 @@ def _render_logged_home():
         st.rerun()
 
     with st.expander("Zona de perigo"):
-        st.warning("Excluir a conta remove tambem equipamentos, documentos, conversas e mensagens salvas.")
+        st.warning("Excluir a conta remove tambem provas, gabaritos, materiais, conversas e mensagens salvas.")
         confirmation_name = st.text_input(
             "Digite seu nome de usuario para confirmar",
             key="delete_account_username",
@@ -65,7 +66,6 @@ def _render_logged_home():
 
 def _render_auth_tabs():
     """Exibe login e registro."""
-    st.subheader("Comecar")
     login_tab, register_tab = st.tabs(["Login", "Registrar"])
 
     with login_tab:

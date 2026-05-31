@@ -56,3 +56,36 @@ class LLMService:
             )
         except self.provider_errors as exc:
             raise LLMServiceError(str(exc)) from exc
+
+    def stream_response(
+        self,
+        user_message: str,
+        conversation_history: list | None = None,
+        document: dict | None = None,
+        equipment_context: str | None = None,
+        knowledge_chunks: list[dict] | None = None,
+        had_direct_matches: bool = False,
+    ):
+        """Encaminha a solicitacao para streaming quando o provider suportar."""
+        if not hasattr(self.provider, "stream_response"):
+            yield self.get_response(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                document=document,
+                equipment_context=equipment_context,
+                knowledge_chunks=knowledge_chunks,
+                had_direct_matches=had_direct_matches,
+            )
+            return
+
+        try:
+            yield from self.provider.stream_response(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                document=document,
+                equipment_context=equipment_context,
+                knowledge_chunks=knowledge_chunks,
+                had_direct_matches=had_direct_matches,
+            )
+        except self.provider_errors as exc:
+            raise LLMServiceError(str(exc)) from exc
