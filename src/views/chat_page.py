@@ -88,15 +88,7 @@ def render_chat():
 
     user_message_to_store = f"{prompt}{_get_document_note(document_payload)}"
     llm_prompt = prompt
-
-    direct_query_result = {"handled": False}
-    if DIRECT_STUDY_RESOLVER_ENABLED:
-        direct_query_result = EquipmentService.resolve_direct_study_query(
-            selected_equipment_id,
-            user_id,
-            prompt,
-            conversation_history=st.session_state.get("messages", []),
-        )
+    selected_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
 
     # Mostra a pergunta imediatamente antes das etapas mais pesadas.
     with st.chat_message("user", avatar=_get_message_avatar({"role": "user"})):
@@ -104,71 +96,56 @@ def render_chat():
         if document_payload:
             st.caption(f"Material anexado: {document_payload['name']}")
 
-    if direct_query_result.get("handled"):
-        if not direct_query_result.get("success", False):
-            st.error(direct_query_result.get("message", "Nao foi possivel consultar a prova."))
-            return
-
-        direct_response = direct_query_result["response"]
-        selected_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
-        with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
-            st.write(direct_response)
-
-        save_result = ChatService.send_message(
-            st.session_state.conversation_id,
-            user_id,
-            user_message_to_store,
-            direct_response,
-        )
-        if not save_result["success"]:
-            st.error(save_result["message"])
-            return
-
-        st.session_state.messages.append({"role": "user", "content": user_message_to_store})
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": direct_response,
-                "provider": selected_provider,
-            }
-        )
-        if save_result.get("title"):
-            st.session_state.current_conversation_title = save_result["title"]
-        if document_payload:
-            st.session_state.document_uploader_key += 1
-        st.rerun()
-
-    equipment_context_result = EquipmentService.get_equipment_context(selected_equipment_id, user_id)
-    if not equipment_context_result["success"]:
-        st.error(equipment_context_result["message"])
-        return
-
-    knowledge_result = EquipmentService.search_equipment_knowledge(
-        selected_equipment_id,
-        user_id,
-        prompt,
-    )
-    if not knowledge_result["success"]:
-        st.error(knowledge_result["message"])
-        return
-
-    resolved_context_text = direct_query_result.get("resolved_context_text", "")
-    if resolved_context_text:
-        equipment_context_result["context_text"] = (
-            f"{equipment_context_result['context_text']}\n\n"
-            f"Contexto objetivo recuperado para esta pergunta:\n{resolved_context_text}"
-        )
-    if direct_query_result.get("rewritten_query"):
-        llm_prompt = direct_query_result["rewritten_query"]
-
-    selected_provider = st.session_state.get("selected_llm_provider", DEFAULT_CHAT_PROVIDER).strip().lower()
-
     with st.chat_message("assistant", avatar=_get_assistant_avatar(selected_provider)):
+        response_placeholder = st.empty()
+        response_placeholder.markdown("_Pensando..._")
+
         with st.spinner("Pensando..."):
             try:
-                llm_service = LLMService(selected_provider)
-                if selected_provider == "ollama":
-                    response_placeholder = st.empty()
+                direct_query_result = {"handled": False}
+                if DIRECT_STUDY_RESOLVER_ENABLED:
+                    direct_query_result = EquipmentService.resolve_direct_study_query(
+                        selected_equipment_id,
+                        user_id,
+                        prompt,
+                        conversation_history=st.session_state.get("messages", []),
+                    )
+
+                if direct_query_result.get("handled"):
+                    if not direct_query_result.get("success", False):
+                        response_placeholder.empty()
+                        st.error(direct_query_result.get("message", "Nao foi possivel consultar a prova."))
+                        return
+
+                    response = direct_query_result["response"]
+                    response_placeholder.write(response)
+                else:
+                    equipment_context_result = EquipmentService.get_equipment_context(selected_equipment_id, user_id)
+                    if not equipment_context_result["success"]:
+                        response_placeholder.empty()
+                        st.error(equipment_context_result["message"])
+                        return
+
+                    knowledge_result = EquipmentService.search_equipment_knowledge(
+                        selected_equipment_id,
+                        user_id,
+                        prompt,
+                    )
+                    if not knowledge_result["success"]:
+                        response_placeholder.empty()
+                        st.error(knowledge_result["message"])
+                        return
+
+                    resolved_context_text = direct_query_result.get("resolved_context_text", "")
+                    if resolved_context_text:
+                        equipment_context_result["context_text"] = (
+                            f"{equipment_context_result['context_text']}\n\n"
+                            f"Contexto objetivo recuperado para esta pergunta:\n{resolved_context_text}"
+                        )
+                    if direct_query_result.get("rewritten_query"):
+                        llm_prompt = direct_query_result["rewritten_query"]
+
+                    llm_service = LLMService(selected_provider)
                     response = ""
                     for chunk in llm_service.stream_response(
                         llm_prompt,
@@ -180,16 +157,17 @@ def render_chat():
                     ):
                         response += chunk
                         response_placeholder.markdown(response)
-                else:
-                    response = llm_service.get_response(
-                        llm_prompt,
-                        st.session_state.messages,
-                        document=document_payload,
-                        equipment_context=equipment_context_result["context_text"],
-                        knowledge_chunks=knowledge_result["chunks"],
-                        had_direct_matches=knowledge_result.get("had_direct_matches", False),
-                    )
-                    st.write(response)
+
+                    if not response:
+                        response = llm_service.get_response(
+                            llm_prompt,
+                            st.session_state.messages,
+                            document=document_payload,
+                            equipment_context=equipment_context_result["context_text"],
+                            knowledge_chunks=knowledge_result["chunks"],
+                            had_direct_matches=knowledge_result.get("had_direct_matches", False),
+                        )
+                        response_placeholder.markdown(response)
 
                 save_result = ChatService.send_message(
                     st.session_state.conversation_id,
@@ -216,8 +194,10 @@ def render_chat():
                     st.session_state.document_uploader_key += 1
                 st.rerun()
             except LLMServiceError as exc:
+                response_placeholder.empty()
                 st.warning(str(exc))
             except Exception as exc:
+                response_placeholder.empty()
                 st.error(f"Erro: {str(exc)}")
 
 

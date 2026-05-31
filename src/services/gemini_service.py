@@ -58,6 +58,47 @@ class GeminiService:
         except Exception as exc:
             raise GeminiServiceError(self._build_friendly_error_message(str(exc))) from exc
 
+    def stream_response(
+        self,
+        user_message: str,
+        conversation_history: list | None = None,
+        document: dict | None = None,
+        equipment_context: str | None = None,
+        knowledge_chunks: list[dict] | None = None,
+        had_direct_matches: bool = False,
+    ):
+        """Entrega a resposta do Gemini em streaming incremental."""
+        try:
+            has_grounding = bool(document or equipment_context or knowledge_chunks)
+            if has_grounding:
+                yield from self._stream_grounded_response(
+                    user_message,
+                    conversation_history or [],
+                    document,
+                    equipment_context,
+                    knowledge_chunks or [],
+                    had_direct_matches,
+                )
+                return
+
+            history = self._format_history(conversation_history or [])
+            chat = self.model.start_chat(history=history)
+            response_stream = chat.send_message(user_message, stream=True)
+            yielded_any_content = False
+            for chunk in response_stream:
+                chunk_text = getattr(chunk, "text", "") or ""
+                if not chunk_text:
+                    continue
+                yielded_any_content = True
+                yield chunk_text
+
+            if not yielded_any_content:
+                raise GeminiServiceError("O Gemini respondeu sem conteudo.")
+        except GeminiServiceError:
+            raise
+        except Exception as exc:
+            raise GeminiServiceError(self._build_friendly_error_message(str(exc))) from exc
+
     def _get_grounded_response(
         self,
         user_message: str,
@@ -100,6 +141,65 @@ class GeminiService:
             response_parts = [*uploaded_files, prompt] if uploaded_files else prompt
             response = self.model.generate_content(response_parts)
             return response.text
+        finally:
+            for uploaded_file in uploaded_files:
+                try:
+                    genai.delete_file(uploaded_file.name)
+                except Exception:
+                    pass
+
+    def _stream_grounded_response(
+        self,
+        user_message: str,
+        conversation_history: list,
+        document: dict | None,
+        equipment_context: str | None,
+        knowledge_chunks: list[dict],
+        had_direct_matches: bool,
+    ):
+        """Entrega em streaming uma resposta baseada em prova, gabarito e materiais."""
+        uploaded_files = []
+        text_documents = []
+
+        try:
+            if document:
+                mime_type = document["mime_type"]
+                file_name = document["name"]
+                file_bytes = document["content"]
+
+                if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    extracted_text = self._extract_docx_text(file_bytes)
+                    if extracted_text.strip():
+                        text_documents.append(f"Material complementar {file_name}:\n{extracted_text[:120000]}")
+                elif mime_type in {"application/pdf", "application/msword"}:
+                    uploaded_file = self._upload_document(file_name, file_bytes, mime_type)
+                    uploaded_files.append(uploaded_file)
+                else:
+                    raise GeminiServiceError(f"Formato de documento nao suportado: {file_name}")
+
+            prompt = self._build_grounded_prompt(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                equipment_context=equipment_context,
+                knowledge_chunks=knowledge_chunks,
+                text_documents=text_documents,
+                has_file_documents=bool(uploaded_files),
+                had_direct_matches=had_direct_matches,
+            )
+
+            response_parts = [*uploaded_files, prompt] if uploaded_files else prompt
+            response_stream = self.model.generate_content(response_parts, stream=True)
+            yielded_any_content = False
+
+            for chunk in response_stream:
+                chunk_text = getattr(chunk, "text", "") or ""
+                if not chunk_text:
+                    continue
+                yielded_any_content = True
+                yield chunk_text
+
+            if not yielded_any_content:
+                raise GeminiServiceError("O Gemini respondeu sem conteudo.")
         finally:
             for uploaded_file in uploaded_files:
                 try:
