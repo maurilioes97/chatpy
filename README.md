@@ -1,35 +1,43 @@
 # AlmoxarifadoIA
 
-Aplicacao em Python com `Streamlit` para consultar listas de pecas de almoxarifado usando a API do Gemini.
+Aplicacao em Python com `Streamlit` para consultar listas de pecas de almoxarifado com apoio da API do Gemini.
 
-O usuario envia uma planilha `.xlsx` com os itens do estoque e depois pode fazer perguntas como:
+O usuario cadastra uma planilha `.xlsx`, abre uma conversa para aquela lista e faz perguntas em linguagem natural, por exemplo:
 
-- `Quais sensores tem no estoque?`
+- `Quais sensores estao disponiveis?`
 - `Qual a quantidade do item X?`
-- `Quais itens estao em falta?`
+- `Quais itens estao abaixo do minimo?`
 - `Me faca um resumo do estoque`
+
+## Tecnologias
+
+- Python
+- Streamlit
+- SQLite
+- Google Gemini API
+- OpenPyXL
 
 ## Requisitos
 
 - Python 3.10 ou superior
-- Conta com chave da API do Gemini
+- Chave da API do Gemini
 
 ## Como baixar o projeto
 
-Se estiver usando Git:
+Com Git:
 
 ```powershell
 git clone <URL_DO_REPOSITORIO>
 cd ChatpyNovo
 ```
 
-Se nao estiver usando Git:
+Sem Git:
 
-1. Baixe os arquivos do projeto.
+1. Baixe o projeto em `.zip`.
 2. Extraia a pasta.
 3. Abra o terminal dentro da pasta do projeto.
 
-## Como criar o ambiente virtual
+## Como criar e ativar a venv
 
 No PowerShell:
 
@@ -53,17 +61,17 @@ Com a `venv` ativada:
 pip install -r requirements.txt
 ```
 
-## Como configurar a chave da API
+## Como configurar a API do Gemini
 
-Crie um arquivo chamado `.env` na raiz do projeto com este conteudo:
+Crie um arquivo `.env` na raiz do projeto:
 
 ```env
 GEMINI_API_KEY=sua_chave_aqui
 ```
 
-Voce tambem pode usar `GOOGLE_API_KEY`, mas o projeto hoje procura primeiro por `GEMINI_API_KEY`.
+O projeto tambem aceita `GOOGLE_API_KEY`, mas procura primeiro por `GEMINI_API_KEY`.
 
-## Como executar a aplicacao
+## Como executar
 
 Com a `venv` ativada:
 
@@ -71,50 +79,87 @@ Com a `venv` ativada:
 streamlit run app.py
 ```
 
-Depois disso, o Streamlit vai abrir no navegador ou mostrar no terminal a URL local, normalmente algo como:
+Normalmente a aplicacao abre em:
 
 ```text
 http://localhost:8501
 ```
 
-## Como usar
+## Fluxo de uso
 
-1. Abra a tela de listas.
-2. Clique em `Adicionar lista`.
-3. Informe nome e descricao.
-4. Envie uma planilha `.xlsx`.
-5. Abra a consulta da lista cadastrada.
-6. Faca perguntas no chat.
+1. Abra a pagina inicial.
+2. Clique em Baixar planilha teste
+3. Clique em `Entrar no sistema`.
+4. Na tela de listas, clique em `Adicionar lista`.
+5. Informe o nome, a descricao e envie a planilha teste`.xlsx`.
+6. Abra a lista cadastrada.
+7. Converse com o assistente sobre os itens da planilha.
+
+## Telas da aplicacao
+
+### 1. Pagina inicial
+
+- Apresenta o sistema
+- Mostra os integrantes do projeto
+- Tem o botao `Entrar no sistema`
+- Tem o botao `Baixar planilha teste`
+
+### 2. Lista de listas
+
+- Exibe as listas cadastradas
+- Permite buscar por nome ou descricao
+- Permite abrir ou excluir uma lista
+
+### 3. Adicionar lista
+
+- Recebe nome da lista
+- Recebe descricao
+- Aceita upload de arquivo `.xlsx`
+
+### 4. Consulta de estoque
+
+- Mostra a lista atual
+- Mantem historico de conversas
+- Permite criar nova conversa
+- Permite excluir conversas
+- Envia perguntas para o Gemini com base no conteudo da planilha
 
 ## Estrutura principal do projeto
 
-- `app.py`: ponto de entrada da aplicacao
-- `src/aplicacao.py`: inicializa a aplicacao e controla as telas
-- `src/banco.py`: cria e acessa o banco SQLite
-- `src/navegacao.py`: guarda o estado de navegacao no Streamlit
-- `src/telas/`: telas da interface
-- `src/servicos/`: regras de negocio e integracao com Gemini
+- `app.py`: ponto de entrada
+- `src/aplicacao.py`: inicializacao e roteamento das telas
+- `src/configuracoes.py`: configuracoes gerais do projeto
+- `src/banco.py`: criacao e acesso ao banco SQLite
+- `src/navegacao.py`: controle de tela e estado atual
+- `src/telas/`: interface Streamlit
+- `src/servicos/`: cadastro de listas, conversas e integracao com Gemini
 - `src/utils/extracao_texto.py`: leitura do arquivo `.xlsx`
-- `dados/`: banco SQLite gerado localmente
-- `uploads/`: planilhas enviadas pelos usuarios
+- `dados/`: banco local gerado automaticamente
+- `uploads/`: arquivos enviados
 
 ## Banco de dados
 
-O projeto usa SQLite local.
-
-O banco e criado automaticamente em:
+O projeto usa SQLite local e cria automaticamente o arquivo:
 
 ```text
 dados/almoxarifado_ia.db
 ```
 
-Voce nao precisa criar esse arquivo manualmente.
+Nao e necessario criar esse arquivo manualmente.
+
+## Configuracoes atuais
+
+- Modelo Gemini usado: `gemini-3.5-flash`
+- Formato aceito no upload: `.xlsx`
+- Arquivos enviados sao salvos localmente na pasta `uploads/`
 
 ## Observacoes importantes
 
-- O projeto atualmente aceita apenas arquivos `.xlsx`.
+- A aplicacao hoje foi pensada para trabalhar com planilhas `.xlsx`.
+- O conteudo da planilha e extraido e enviado ao assistente como texto.
 - As pastas `dados/` e `uploads/` sao criadas automaticamente na primeira execucao.
-- Se a API do Gemini retornar erro de quota (`429`), aguarde alguns segundos e tente novamente.
+- Em caso de erro temporario da API do Gemini, o chat mostra uma mensagem resumida com o codigo do erro.
+- Se a conta estiver sem quota, podem ocorrer erros como `429`.
 
 ## Comandos uteis
 
